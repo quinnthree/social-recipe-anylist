@@ -27,6 +27,11 @@ Target command:
 
 npm run import -- "<url>"
 
+Debugging: append --dry-run to extract and print Recipe JSON without
+touching AnyList.
+
+npm run import -- "<url>" --dry-run
+
 Eventually the target result is:
 
 ✓ Chicken Tinga saved to AnyList
@@ -120,6 +125,19 @@ URL
 → print normalized Recipe JSON
 
 Do not connect AnyList until this pipeline works.
+
+## Known Issues
+
+anylist@0.8.6 pins protobufjs@5.0.3, which npm audit reports as 1 critical,
+1 high, and 1 moderate advisory with no fix available. The package does not
+support a newer protobufjs, so this cannot be resolved without replacing or
+forking the dependency.
+
+Accepted for this private single-user proof of concept because the protobuf
+schema is bundled and messages are exchanged only with AnyList's own API.
+Revisit before any broader deployment, multi-user use, or exposure of an
+HTTP API. Do not patch, override, or upgrade transitive dependencies outside
+what anylist@0.8.6 supports.
 
 ## Working Style
 

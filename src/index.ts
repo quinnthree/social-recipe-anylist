@@ -1,27 +1,66 @@
+import { pathToFileURL } from "node:url";
+
 import { config } from "dotenv";
 
+import { AnyListRecipeSaver } from "./anylist/client.js";
 import { parseRecipe } from "./recipe/parser.js";
 import { fetchSourceContent } from "./social/index.js";
 
-// quiet: keep stdout to the recipe JSON alone.
+// quiet: keep stdout to the recipe JSON / success line alone.
 config({ quiet: true });
 
-const USAGE = 'Usage: npm run import -- "<instagram-or-tiktok-url>"';
+const USAGE = 'Usage: npm run import -- "<instagram-or-tiktok-url>" [--dry-run]';
 
-async function main(): Promise<void> {
-  const url = process.argv[2];
+export interface CliArgs {
+  url: string;
+  dryRun: boolean;
+}
 
-  if (url === undefined || url.trim().length === 0) {
+/** Accepts --dry-run before or after the URL. Unknown flags are rejected, never ignored. */
+export function parseArgs(argv: readonly string[]): CliArgs {
+  let url: string | null = null;
+  let dryRun = false;
+
+  for (const arg of argv) {
+    if (arg === "--dry-run") {
+      dryRun = true;
+    } else if (arg.startsWith("-")) {
+      throw new Error(`Unknown flag "${arg}".\n${USAGE}`);
+    } else if (url !== null) {
+      throw new Error(`Expected a single URL but got two: "${url}" and "${arg}".\n${USAGE}`);
+    } else {
+      url = arg;
+    }
+  }
+
+  if (url === null || url.trim().length === 0) {
     throw new Error(`No URL provided.\n${USAGE}`);
   }
 
-  const content = await fetchSourceContent(url.trim());
-  const recipe = await parseRecipe(content);
-
-  console.log(JSON.stringify(recipe, null, 2));
+  return { url: url.trim(), dryRun };
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+async function main(): Promise<void> {
+  const { url, dryRun } = parseArgs(process.argv.slice(2));
+
+  const content = await fetchSourceContent(url);
+  const recipe = await parseRecipe(content);
+
+  if (dryRun) {
+    // Never instantiates, authenticates, or contacts AnyList.
+    console.log(JSON.stringify(recipe, null, 2));
+    return;
+  }
+
+  const result = await AnyListRecipeSaver.fromEnvironment().save(recipe);
+  console.log(`✓ ${result.name} saved to AnyList`);
+}
+
+/** Only run when invoked as the CLI, so tests can import parseArgs safely. */
+const entryPoint = process.argv[1];
+if (entryPoint !== undefined && import.meta.url === pathToFileURL(entryPoint).href) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
