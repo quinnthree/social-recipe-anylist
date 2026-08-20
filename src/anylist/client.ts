@@ -6,6 +6,10 @@ const LOGIN_FAILED = "AnyList login failed. Check ANYLIST_EMAIL and ANYLIST_PASS
 const SAVE_FAILED = "Failed to save the recipe to AnyList.";
 const MISSING_CREDENTIALS =
   "Missing AnyList credentials. Set ANYLIST_EMAIL and ANYLIST_PASSWORD in .env (see .env.example).";
+const VERIFY_UNREADABLE =
+  "AnyList accepted the save request, but the account could not be re-read to verify it.";
+const VERIFY_MISSING =
+  "AnyList accepted the save request, but the recipe could not be verified in the account.";
 
 /** The subset of the anylist package this adapter drives. */
 export interface AnyListClientLike {
@@ -14,6 +18,7 @@ export interface AnyListClientLike {
     identifier: string;
     save(): Promise<void>;
   }>;
+  getRecipes(refreshCache?: boolean): Promise<Array<{ identifier: string }>>;
   teardown(): void;
 }
 
@@ -49,18 +54,47 @@ export class AnyListRecipeSaver implements RecipeSaver {
 
         const payload = toAnyListRecipe(recipe);
 
+        let identifier: string;
         try {
           const handle = await client.createRecipe(payload);
           await handle.save();
-          return { name: payload.name, identifier: handle.identifier };
+          identifier = handle.identifier;
         } catch (error) {
           throw new AnyListError(withStatus(SAVE_FAILED, error));
         }
+
+        // save() resolving only means the request was accepted. Read the
+        // account back from the server and confirm the recipe is really there.
+        await verifyPersisted(client, identifier);
+
+        return { name: payload.name, identifier };
       });
     } finally {
       // Runs whether login, mapping, creation, or saving threw.
       client.teardown();
     }
+  }
+}
+
+/**
+ * Confirms a saved recipe exists in the account by forcing a fresh server read
+ * and matching on the generated identifier. Never creates a recipe, never
+ * retries the save, and never inspects anything but identifiers.
+ */
+async function verifyPersisted(client: AnyListClientLike, identifier: string): Promise<void> {
+  let stored: Array<{ identifier: string }>;
+
+  try {
+    // true: bypass the in-memory cache so this is a real server read.
+    stored = await client.getRecipes(true);
+  } catch (error) {
+    throw new AnyListError(withStatus(VERIFY_UNREADABLE, error));
+  }
+
+  // Match by identifier, never by name: names are not unique and would make
+  // this a duplicate check rather than a verification.
+  if (!stored.some((recipe) => recipe.identifier === identifier)) {
+    throw new AnyListError(VERIFY_MISSING);
   }
 }
 

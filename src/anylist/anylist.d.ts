@@ -13,6 +13,11 @@ declare module "anylist" {
     credentialsFile?: string | null;
   }
 
+  /** Only the field needed to verify a save; nothing else is declared on purpose. */
+  interface AnyListStoredRecipe {
+    identifier: string;
+  }
+
   interface AnyListRecipeHandle {
     identifier: string;
     save(): Promise<void>;
@@ -22,6 +27,8 @@ declare module "anylist" {
     constructor(options: AnyListOptions);
     login(connectWebSocket?: boolean): Promise<void>;
     createRecipe(recipe: object): Promise<AnyListRecipeHandle>;
+    /** refreshCache=true forces a fresh read of user data from the server. */
+    getRecipes(refreshCache?: boolean): Promise<AnyListStoredRecipe[]>;
     teardown(): void;
   }
 
