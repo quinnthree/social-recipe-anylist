@@ -1,81 +1,81 @@
 import type { Ingredient, Recipe, TimeRange } from "../recipe/schema.js";
-import type { AnyListIngredient, AnyListRecipe } from "./types.js";
+import type { CreateRecipeOptions, IngredientInput } from "./types.js";
 
-const SECONDS_PER_MINUTE = 60;
 const EN_DASH = "–";
 
 /**
- * Maps a validated Recipe onto the AnyList payload shape. Pure: no I/O, no
- * dependency on the anylist package, so it is testable without live calls.
+ * Maps a validated Recipe onto the AnyList payload. Pure: no I/O and no runtime
+ * dependency on the AnyList library, so it is fully testable without live calls.
+ *
+ * Optional keys are omitted rather than set to undefined, because the library's
+ * types declare them as `?: string` and the project runs with
+ * exactOptionalPropertyTypes.
  */
-export function toAnyListRecipe(recipe: Recipe): AnyListRecipe {
-  return {
+export function toAnyListRecipe(recipe: Recipe): CreateRecipeOptions {
+  const options: CreateRecipeOptions = {
     name: recipe.title,
-    note: buildNote(recipe),
-    sourceName: recipe.source.creator ?? undefined,
-    sourceUrl: recipe.source.url,
-    servings: formatServings(recipe.servings),
-    preparationSteps: recipe.instructions,
     ingredients: recipe.ingredients.map(toAnyListIngredient),
-    prepTime: toSeconds(recipe.prepTime),
-    cookTime: toSeconds(recipe.cookTime),
+    preparationSteps: recipe.instructions,
+    sourceUrl: recipe.source.url,
   };
+
+  const note = buildNote(recipe);
+  if (note !== undefined) options.note = note;
+
+  if (recipe.source.creator !== null) options.sourceName = recipe.source.creator;
+
+  // Losslessly textual: AnyList's servings field is a string. No invented units.
+  if (recipe.servings !== null) options.servings = `${recipe.servings}`;
+
+  // Minutes, not seconds. The library has a known bug where these persist as 0;
+  // they are sent anyway so a future fix upstream benefits us automatically,
+  // and buildNote preserves the stated time regardless.
+  if (recipe.prepTime !== null) options.prepTime = recipe.prepTime.minMinutes;
+  if (recipe.cookTime !== null) options.cookTime = recipe.cookTime.minMinutes;
+
+  return options;
 }
 
 /**
- * AnyList's `servings` is a protobuf string field; encoding a number throws
- * "Illegal value for servings ... (not a string)". The value is passed through
- * verbatim as text — no rounding, no unit invention, no normalisation.
- */
-function formatServings(servings: number | null): string | undefined {
-  return servings === null ? undefined : `${servings}`;
-}
-
-/** Converts a stated duration to seconds using the lower bound. Ranges are never averaged. */
-export function toSeconds(time: TimeRange | null): number | undefined {
-  return time === null ? undefined : time.minMinutes * SECONDS_PER_MINUTE;
-}
-
-/**
- * AnyList holds a single numeric time per field, so a stated range would lose
- * its upper bound. The full range is preserved in the recipe note instead.
+ * The recipe note carries every explicitly stated time, not just ranges, because
+ * the numeric prepTime/cookTime fields currently persist as 0 upstream.
  */
 export function buildNote(recipe: Recipe): string | undefined {
   const lines: string[] = [];
 
   if (recipe.description !== null) lines.push(recipe.description);
 
-  const prep = describeRange(recipe.prepTime);
+  const prep = describeTime(recipe.prepTime);
   if (prep !== null) lines.push(`Prep time stated in source: ${prep}`);
 
-  const cook = describeRange(recipe.cookTime);
+  const cook = describeTime(recipe.cookTime);
   if (cook !== null) lines.push(`Cook time stated in source: ${cook}`);
 
   return lines.length > 0 ? lines.join("\n") : undefined;
 }
 
-/** Only a genuine range needs preserving; an exact time survives in the numeric field. */
-function describeRange(time: TimeRange | null): string | null {
-  if (time === null || time.maxMinutes === null) return null;
-  return `${time.minMinutes}${EN_DASH}${time.maxMinutes} minutes`;
+/** "40 minutes" for an exact time, "35–40 minutes" for a range. Ranges are never averaged. */
+function describeTime(time: TimeRange | null): string | null {
+  if (time === null) return null;
+
+  return time.maxMinutes === null
+    ? `${time.minMinutes} minutes`
+    : `${time.minMinutes}${EN_DASH}${time.maxMinutes} minutes`;
 }
 
-export function toAnyListIngredient(ingredient: Ingredient): AnyListIngredient {
-  return {
-    rawIngredient: ingredient.rawText || reconstructRawText(ingredient),
-    name: ingredient.name,
-    quantity: formatQuantity(ingredient),
-    note: ingredient.preparation ?? undefined,
-  };
-}
+/**
+ * AnyList ingredients carry name, quantity, and note only. `rawText` stays in
+ * our normalised Recipe and is deliberately not transmitted.
+ */
+export function toAnyListIngredient(ingredient: Ingredient): IngredientInput {
+  const mapped: IngredientInput = { name: ingredient.name };
 
-/** Fallback for an ingredient that arrived without its original line. */
-function reconstructRawText(ingredient: Ingredient): string {
-  const measured = [ingredient.quantity, ingredient.unit, ingredient.name]
-    .filter((part): part is string => part !== null && part.length > 0)
-    .join(" ");
+  const quantity = formatQuantity(ingredient);
+  if (quantity !== undefined) mapped.quantity = quantity;
 
-  return ingredient.preparation === null ? measured : `${measured}, ${ingredient.preparation}`;
+  if (ingredient.preparation !== null) mapped.note = ingredient.preparation;
+
+  return mapped;
 }
 
 /** AnyList shows quantity and unit as one string. */

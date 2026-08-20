@@ -128,16 +128,16 @@ Do not connect AnyList until this pipeline works.
 
 ## Known Issues
 
-anylist@0.8.6 pins protobufjs@5.0.3, which npm audit reports as 1 critical,
-1 high, and 1 moderate advisory with no fix available. The package does not
-support a newer protobufjs, so this cannot be resolved without replacing or
-forking the dependency.
+@anylist-napi/anylist-napi persists prepTime and cookTime as 0 (upstream bug).
+The mapping still sends minMinutes so a future upstream fix benefits us
+automatically, and every explicitly stated time is also written into the
+recipe note so the information is never lost.
 
-Accepted for this private single-user proof of concept because the protobuf
-schema is bundled and messages are exchanged only with AnyList's own API.
-Revisit before any broader deployment, multi-user use, or exposure of an
-HTTP API. Do not patch, override, or upgrade transitive dependencies outside
-what anylist@0.8.6 supports.
+The package ships a prebuilt native binary and has one published version
+from a single maintainer. It has no runtime JS dependencies and no known
+advisories, but the binary itself cannot be audited by npm. Accepted for this
+private single-user proof of concept; revisit before broader deployment or
+multi-user use.
 
 ## Working Style
 

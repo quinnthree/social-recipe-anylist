@@ -2,7 +2,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
-import { parseArgs } from "./index.js";
+import type { SourceContent } from "./social/types.js";
+import type { Recipe } from "./recipe/schema.js";
+import { parseArgs, runImport } from "./index.js";
 
 const run = promisify(execFile);
 
@@ -71,5 +73,79 @@ describe("parseArgs", () => {
   it("rejects an empty argument list", () => {
     expect(() => parseArgs([])).toThrow("No URL provided.");
     expect(() => parseArgs(["--dry-run"])).toThrow("No URL provided.");
+  });
+});
+
+describe("runImport", () => {
+  const URL = "https://www.tiktok.com/@creator/video/7123456789";
+
+  const content: SourceContent = {
+    platform: "tiktok",
+    url: URL,
+    creator: "creator",
+    text: "Cottage cheese brownies",
+    textSource: "caption",
+  };
+
+  const recipe: Recipe = {
+    title: "Cottage Cheese Brownies",
+    description: null,
+    servings: 9,
+    prepTime: null,
+    cookTime: { minMinutes: 35, maxMinutes: 40 },
+    ingredients: [
+      { quantity: "16", unit: "oz", name: "cottage cheese", preparation: null, rawText: "16 oz cottage cheese" },
+    ],
+    instructions: ["Blend until smooth."],
+    source: { platform: "tiktok", creator: "creator", url: URL },
+    confidence: 1,
+    warnings: [],
+  };
+
+  function deps(overrides: { createSaver?: () => never } = {}) {
+    return {
+      fetchSourceContent: async () => content,
+      parseRecipe: async () => recipe,
+      createSaver:
+        overrides.createSaver ??
+        (() => ({ save: async () => ({ name: recipe.title, identifier: "server-id" }) })),
+    };
+  }
+
+  it("prints the recipe JSON on a dry run", async () => {
+    const output = await runImport({ url: URL, dryRun: true }, deps());
+
+    expect(JSON.parse(output)).toEqual(recipe);
+  });
+
+  it("never constructs the AnyList adapter on a dry run", async () => {
+    const createSaver = (): never => {
+      throw new Error("AnyList must not be constructed during a dry run");
+    };
+
+    await expect(
+      runImport({ url: URL, dryRun: true }, deps({ createSaver })),
+    ).resolves.toContain("Cottage Cheese Brownies");
+  });
+
+  it("saves and reports success on a normal run", async () => {
+    const output = await runImport({ url: URL, dryRun: false }, deps());
+
+    expect(output).toBe("✓ Cottage Cheese Brownies saved to AnyList");
+  });
+
+  it("does not report success when verification fails", async () => {
+    const failing = {
+      ...deps(),
+      createSaver: () => ({
+        save: async () => {
+          throw new Error("AnyList accepted the save request, but the recipe could not be verified in the account.");
+        },
+      }),
+    };
+
+    await expect(runImport({ url: URL, dryRun: false }, failing)).rejects.toThrow(
+      "could not be verified",
+    );
   });
 });

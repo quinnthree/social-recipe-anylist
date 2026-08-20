@@ -15,7 +15,7 @@
   "license": "ISC",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
-    "anylist": "^0.8.6",
+    "@anylist-napi/anylist-napi": "^1.1.1",
     "dotenv": "^17.4.2",
     "fastify": "^5.12.1",
     "pino": "^10.3.1",

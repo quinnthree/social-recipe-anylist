@@ -1,26 +1,14 @@
+import type { CreateRecipeOptions, IngredientInput } from "@anylist-napi/anylist-napi";
+
 import type { Recipe } from "../recipe/schema.js";
 
-/** An ingredient in the shape AnyList's PBIngredient message expects. */
-export interface AnyListIngredient {
-  rawIngredient: string;
-  name: string;
-  quantity?: string | undefined;
-  note?: string | undefined;
-}
-
-/** A recipe in the shape AnyList's PBRecipe message expects. */
-export interface AnyListRecipe {
-  name: string;
-  note?: string | undefined;
-  sourceName?: string | undefined;
-  sourceUrl: string;
-  servings?: string | undefined;
-  preparationSteps: string[];
-  ingredients: AnyListIngredient[];
-  /** Seconds. AnyList stores prep and cook time as int32 seconds. */
-  prepTime?: number | undefined;
-  cookTime?: number | undefined;
-}
+/**
+ * The destination payload types come straight from the library, so a change in
+ * its shape becomes a compile error here rather than a runtime surprise. These
+ * are type-only imports, so nothing is loaded at runtime — a dry run never
+ * touches the native module.
+ */
+export type { CreateRecipeOptions, IngredientInput };
 
 export interface SaveResult {
   name: string;
@@ -34,9 +22,8 @@ export interface RecipeSaver {
 
 /**
  * An application-level failure. Messages are fixed strings chosen by us; the
- * underlying third-party error is never attached, serialised, or used as
- * `cause`, because it can reach the submitted credentials through
- * `response.request.options`.
+ * underlying library error is never attached, serialised, or used as `cause`,
+ * so credentials, tokens, and request details cannot escape through it.
  */
 export class AnyListError extends Error {
   constructor(message: string) {

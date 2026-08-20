@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { Recipe } from "../recipe/schema.js";
 import { AnyListRecipeSaver, type AnyListClientLike } from "./client.js";
@@ -6,6 +6,7 @@ import { AnyListError } from "./types.js";
 
 const PASSWORD = "sup3r-s3cret-p@ssword";
 const EMAIL = "cook@example.com";
+const SERVER_ID = "server-assigned-recipe-id";
 
 const recipe: Recipe = {
   title: "Cottage Cheese Brownies",
@@ -26,267 +27,167 @@ const recipe: Recipe = {
   warnings: [],
 };
 
-const IDENTIFIER = "recipe-uuid-1234";
-
 interface FakeOptions {
   loginError?: unknown;
   createError?: unknown;
-  saveError?: unknown;
-  getRecipesError?: unknown;
-  /** What the refreshed server read returns. Defaults to the saved recipe. */
-  storedAfterSave?: Array<{ identifier: string }>;
+  verifyError?: unknown;
+  /** What getRecipeById returns. Defaults to the created recipe. */
+  verifyResult?: { id: string } | null;
 }
 
 function fakeClient(options: FakeOptions = {}) {
-  const calls = {
-    login: 0,
-    teardown: 0,
-    save: 0,
-    getRecipes: 0,
-    refreshFlags: [] as Array<boolean | undefined>,
-    payloads: [] as unknown[],
-  };
+  const calls = { create: 0, verify: 0, verifiedIds: [] as string[], payloads: [] as unknown[] };
 
   const client: AnyListClientLike = {
-    async login(connectWebSocket?: boolean) {
-      calls.login += 1;
-      expect(connectWebSocket).toBe(false);
-      if (options.loginError !== undefined) throw options.loginError;
-    },
     async createRecipe(payload) {
+      calls.create += 1;
       calls.payloads.push(payload);
       if (options.createError !== undefined) throw options.createError;
-      return {
-        identifier: IDENTIFIER,
-        async save() {
-          calls.save += 1;
-          if (options.saveError !== undefined) throw options.saveError;
-        },
-      };
+      return { id: SERVER_ID, name: payload.name };
     },
-    async getRecipes(refreshCache?: boolean) {
-      calls.getRecipes += 1;
-      calls.refreshFlags.push(refreshCache);
-      if (options.getRecipesError !== undefined) throw options.getRecipesError;
-      return options.storedAfterSave ?? [{ identifier: IDENTIFIER }];
-    },
-    teardown() {
-      calls.teardown += 1;
+    async getRecipeById(recipeId) {
+      calls.verify += 1;
+      calls.verifiedIds.push(recipeId);
+      if (options.verifyError !== undefined) throw options.verifyError;
+      return options.verifyResult === undefined ? { id: SERVER_ID } : options.verifyResult;
     },
   };
 
-  return { client, calls };
+  const connect = async (): Promise<AnyListClientLike> => {
+    if (options.loginError !== undefined) throw options.loginError;
+    return client;
+  };
+
+  return { client, connect, calls };
 }
 
-/** Shaped like a got HTTPError: the submitted credentials are reachable from it. */
-function gotStyleError(statusCode: number): Error {
-  return Object.assign(new Error(`Response code ${statusCode}`), {
+/** Shaped like a transport error whose innards reach the submitted credentials. */
+function credentialBearingError(statusCode: number): Error {
+  return Object.assign(new Error(`Request failed for ${EMAIL} with password ${PASSWORD}`), {
     response: {
       statusCode,
       body: `{"error":"bad credentials for ${EMAIL}"}`,
-      request: { options: { url: "https://www.anylist.com/auth/token", body: `password=${PASSWORD}` } },
+      request: { options: { body: `password=${PASSWORD}` } },
     },
   });
 }
 
 describe("AnyListRecipeSaver.save", () => {
-  it("logs in without a WebSocket, saves, and reports the recipe", async () => {
-    const { client, calls } = fakeClient();
-    const result = await new AnyListRecipeSaver(async () => client).save(recipe);
+  it("creates the recipe and returns the server-assigned id", async () => {
+    const { connect, calls } = fakeClient();
+    const result = await new AnyListRecipeSaver(connect).save(recipe);
 
-    expect(result).toEqual({ name: "Cottage Cheese Brownies", identifier: IDENTIFIER });
-    expect(calls.login).toBe(1);
-    expect(calls.save).toBe(1);
+    expect(result).toEqual({ name: "Cottage Cheese Brownies", identifier: SERVER_ID });
+    expect(calls.create).toBe(1);
   });
 
   it("sends the mapped payload, not the internal Recipe", async () => {
-    const { client, calls } = fakeClient();
-    await new AnyListRecipeSaver(async () => client).save(recipe);
+    const { connect, calls } = fakeClient();
+    await new AnyListRecipeSaver(connect).save(recipe);
 
-    expect(calls.payloads[0]).toMatchObject({
+    expect(calls.payloads[0]).toEqual({
       name: "Cottage Cheese Brownies",
+      ingredients: [{ name: "cottage cheese", quantity: "16 oz" }],
+      preparationSteps: ["Blend until smooth."],
       sourceUrl: "https://www.tiktok.com/@creator/video/7123456789",
-      cookTime: 2100,
+      sourceName: "creator",
+      servings: "9",
       note: "Cook time stated in source: 35–40 minutes",
+      cookTime: 35,
     });
   });
 
-  describe("post-save verification", () => {
-    it("forces a fresh server read and matches on the generated identifier", async () => {
-      const { client, calls } = fakeClient();
-      const result = await new AnyListRecipeSaver(async () => client).save(recipe);
+  it("does not transmit rawText", async () => {
+    const { connect, calls } = fakeClient();
+    await new AnyListRecipeSaver(connect).save(recipe);
 
-      expect(calls.getRecipes).toBe(1);
-      expect(calls.refreshFlags).toEqual([true]);
-      expect(result.identifier).toBe(IDENTIFIER);
+    expect(JSON.stringify(calls.payloads[0])).not.toContain("rawText");
+  });
+
+  describe("verification", () => {
+    it("verifies with a targeted read of the server-assigned id", async () => {
+      const { connect, calls } = fakeClient();
+      await new AnyListRecipeSaver(connect).save(recipe);
+
+      expect(calls.verify).toBe(1);
+      expect(calls.verifiedIds).toEqual([SERVER_ID]);
     });
 
-    it("succeeds when the account holds other recipes alongside the new one", async () => {
-      const { client } = fakeClient({
-        storedAfterSave: [
-          { identifier: "some-older-recipe" },
-          { identifier: IDENTIFIER },
-          { identifier: "another-recipe" },
-        ],
-      });
+    it("fails when the read returns nothing", async () => {
+      const { connect } = fakeClient({ verifyResult: null });
 
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).resolves.toMatchObject({
-        identifier: IDENTIFIER,
-      });
-    });
-
-    it("fails when save resolved but the recipe is absent after the refresh", async () => {
-      const { client } = fakeClient({ storedAfterSave: [{ identifier: "some-older-recipe" }] });
-
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
+      await expect(new AnyListRecipeSaver(connect).save(recipe)).rejects.toThrow(
         "AnyList accepted the save request, but the recipe could not be verified in the account.",
       );
     });
 
-    it("fails when the account comes back empty after the refresh", async () => {
-      const { client } = fakeClient({ storedAfterSave: [] });
+    it("fails when the read returns a different id", async () => {
+      const { connect } = fakeClient({ verifyResult: { id: "some-other-recipe" } });
 
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
-        AnyListError,
-      );
-    });
-
-    it("does not match on recipe name", async () => {
-      // A same-named recipe already in the account must not satisfy verification.
-      const { client } = fakeClient({
-        storedAfterSave: [{ identifier: "different-id", name: "Cottage Cheese Brownies" } as never],
-      });
-
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
+      await expect(new AnyListRecipeSaver(connect).save(recipe)).rejects.toThrow(
         "AnyList accepted the save request, but the recipe could not be verified in the account.",
       );
     });
 
-    it("reports a distinct error when the refresh read itself fails", async () => {
-      const { client } = fakeClient({ getRecipesError: gotStyleError(503) });
+    it("reports a distinct error when the read itself fails", async () => {
+      const { connect } = fakeClient({ verifyError: credentialBearingError(503) });
 
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
-        "AnyList accepted the save request, but the account could not be re-read to verify it. (HTTP 503)",
+      await expect(new AnyListRecipeSaver(connect).save(recipe)).rejects.toThrow(
+        "AnyList accepted the save request, but the recipe could not be read back to verify it. (HTTP 503)",
       );
     });
 
-    it("never creates a second recipe or retries the save while verifying", async () => {
-      const { client, calls } = fakeClient({ storedAfterSave: [] });
+    it("does not create a second recipe or retry while verifying", async () => {
+      const { connect, calls } = fakeClient({ verifyResult: null });
 
-      await new AnyListRecipeSaver(async () => client).save(recipe).catch(() => undefined);
+      await new AnyListRecipeSaver(connect).save(recipe).catch(() => undefined);
 
-      expect(calls.payloads).toHaveLength(1);
-      expect(calls.save).toBe(1);
-      expect(calls.getRecipes).toBe(1);
-    });
-
-    it("keeps credentials out of a verification failure", async () => {
-      const { client } = fakeClient({ getRecipesError: gotStyleError(503) });
-
-      const error = await new AnyListRecipeSaver(async () => client)
-        .save(recipe)
-        .catch((thrown: unknown) => thrown);
-
-      const exposed = [
-        (error as Error).message,
-        (error as Error).stack ?? "",
-        JSON.stringify(error, Object.getOwnPropertyNames(error)),
-      ].join("\n");
-
-      expect(error).toBeInstanceOf(AnyListError);
-      expect(exposed).not.toContain(PASSWORD);
-      expect(exposed).not.toContain(EMAIL);
-    });
-  });
-
-  describe("teardown", () => {
-    it("runs after a successful save", async () => {
-      const { client, calls } = fakeClient();
-      await new AnyListRecipeSaver(async () => client).save(recipe);
-      expect(calls.teardown).toBe(1);
-    });
-
-    it("runs when login fails", async () => {
-      const { client, calls } = fakeClient({ loginError: new Error("nope") });
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
-        AnyListError,
-      );
-      expect(calls.teardown).toBe(1);
-    });
-
-    it("runs when recipe creation fails", async () => {
-      const { client, calls } = fakeClient({ createError: new Error("nope") });
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
-        AnyListError,
-      );
-      expect(calls.teardown).toBe(1);
-    });
-
-    it("runs when saving fails", async () => {
-      const { client, calls } = fakeClient({ saveError: new Error("nope") });
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
-        AnyListError,
-      );
-      expect(calls.teardown).toBe(1);
-    });
-
-    it("runs when the verification read fails", async () => {
-      const { client, calls } = fakeClient({ getRecipesError: new Error("nope") });
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
-        AnyListError,
-      );
-      expect(calls.teardown).toBe(1);
-    });
-
-    it("runs when the recipe is missing after the refresh", async () => {
-      const { client, calls } = fakeClient({ storedAfterSave: [] });
-      await expect(new AnyListRecipeSaver(async () => client).save(recipe)).rejects.toThrow(
-        AnyListError,
-      );
-      expect(calls.teardown).toBe(1);
+      expect(calls.create).toBe(1);
+      expect(calls.verify).toBe(1);
     });
   });
 
   describe("error redaction", () => {
     it("replaces a login failure with a fixed application message", async () => {
-      const { client } = fakeClient({ loginError: gotStyleError(401) });
-      const saver = new AnyListRecipeSaver(async () => client);
+      const { connect } = fakeClient({ loginError: credentialBearingError(401) });
 
-      await expect(saver.save(recipe)).rejects.toThrow(
+      await expect(new AnyListRecipeSaver(connect).save(recipe)).rejects.toThrow(
         "AnyList login failed. Check ANYLIST_EMAIL and ANYLIST_PASSWORD in .env. (HTTP 401)",
       );
     });
 
-    it("replaces a save failure with a fixed application message", async () => {
-      const { client } = fakeClient({ saveError: gotStyleError(500) });
-      const saver = new AnyListRecipeSaver(async () => client);
+    it("replaces a createRecipe failure with a fixed application message", async () => {
+      const { connect } = fakeClient({ createError: credentialBearingError(500) });
 
-      await expect(saver.save(recipe)).rejects.toThrow(
+      await expect(new AnyListRecipeSaver(connect).save(recipe)).rejects.toThrow(
         "Failed to save the recipe to AnyList. (HTTP 500)",
       );
     });
 
     it("omits the status when none is safely available", async () => {
-      const { client } = fakeClient({ loginError: new Error("socket hang up") });
-      const saver = new AnyListRecipeSaver(async () => client);
+      const { connect } = fakeClient({ createError: new Error("native panic: whatever") });
 
-      await expect(saver.save(recipe)).rejects.toThrow(
-        "AnyList login failed. Check ANYLIST_EMAIL and ANYLIST_PASSWORD in .env.",
+      await expect(new AnyListRecipeSaver(connect).save(recipe)).rejects.toThrow(
+        "Failed to save the recipe to AnyList.",
       );
     });
 
-    it("never lets the password reach the thrown error, including via cause or stack", async () => {
-      for (const failure of [
-        { loginError: gotStyleError(401) },
-        { createError: gotStyleError(403) },
-        { saveError: gotStyleError(500) },
-      ]) {
-        const { client } = fakeClient(failure);
-        const saver = new AnyListRecipeSaver(async () => client);
+    it("never lets credentials reach the thrown error, on any failure path", async () => {
+      const failures: FakeOptions[] = [
+        { loginError: credentialBearingError(401) },
+        { createError: credentialBearingError(500) },
+        { verifyError: credentialBearingError(503) },
+        { verifyResult: null },
+      ];
 
-        const error = await saver.save(recipe).catch((thrown: unknown) => thrown);
+      for (const failure of failures) {
+        const { connect } = fakeClient(failure);
+        const error = await new AnyListRecipeSaver(connect)
+          .save(recipe)
+          .catch((thrown: unknown) => thrown);
 
         expect(error).toBeInstanceOf(AnyListError);
+
         const exposed = [
           (error as Error).message,
           (error as Error).stack ?? "",
@@ -297,58 +198,6 @@ describe("AnyListRecipeSaver.save", () => {
         expect(exposed).not.toContain(PASSWORD);
         expect(exposed).not.toContain(EMAIL);
         expect((error as { cause?: unknown }).cause).toBeUndefined();
-      }
-    });
-  });
-
-  describe("console handling", () => {
-    it("suppresses the package's console output and restores the originals", async () => {
-      const info = vi.fn();
-      const error = vi.fn();
-      const originalInfo = console.info;
-      const originalError = console.error;
-      console.info = info;
-      console.error = error;
-
-      try {
-        const client: AnyListClientLike = {
-          async login() {
-            // The real package logs progress here; console.info writes to stdout.
-            console.info("No saved tokens found, fetching new tokens using credentials");
-            console.error("Endpoint https://www.anylist.com/... returned status code 401");
-          },
-          async createRecipe() {
-            return { identifier: "id", async save() {} };
-          },
-          async getRecipes() {
-            return [{ identifier: "id" }];
-          },
-          teardown() {},
-        };
-
-        await new AnyListRecipeSaver(async () => client).save(recipe);
-
-        expect(info).not.toHaveBeenCalled();
-        expect(error).not.toHaveBeenCalled();
-        expect(console.info).toBe(info);
-        expect(console.error).toBe(error);
-      } finally {
-        console.info = originalInfo;
-        console.error = originalError;
-      }
-    });
-
-    it("restores the originals even when the operation throws", async () => {
-      const info = vi.fn();
-      const originalInfo = console.info;
-      console.info = info;
-
-      try {
-        const { client } = fakeClient({ loginError: new Error("nope") });
-        await new AnyListRecipeSaver(async () => client).save(recipe).catch(() => undefined);
-        expect(console.info).toBe(info);
-      } finally {
-        console.info = originalInfo;
       }
     });
   });
@@ -370,14 +219,12 @@ describe("AnyListRecipeSaver.fromEnvironment", () => {
   });
 
   it("does not put the password in the error when the email is blank", () => {
-    const thrown = (() => {
-      try {
-        AnyListRecipeSaver.fromEnvironment({ ANYLIST_EMAIL: "   ", ANYLIST_PASSWORD: PASSWORD });
-      } catch (error: unknown) {
-        return error as Error;
-      }
-      return null;
-    })();
+    let thrown: Error | null = null;
+    try {
+      AnyListRecipeSaver.fromEnvironment({ ANYLIST_EMAIL: "   ", ANYLIST_PASSWORD: PASSWORD });
+    } catch (error: unknown) {
+      thrown = error as Error;
+    }
 
     expect(thrown?.message).not.toContain(PASSWORD);
   });
