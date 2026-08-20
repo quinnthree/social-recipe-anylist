@@ -3,7 +3,8 @@ import { config } from "dotenv";
 import { parseRecipe } from "./recipe/parser.js";
 import { fetchSourceContent } from "./social/index.js";
 
-config();
+// quiet: keep stdout to the recipe JSON alone.
+config({ quiet: true });
 
 const USAGE = 'Usage: npm run import -- "<instagram-or-tiktok-url>"';
 

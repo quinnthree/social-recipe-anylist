@@ -15,6 +15,16 @@ export const IngredientSchema = z.object({
   rawText: z.string().min(1),
 });
 
+/**
+ * An explicitly stated duration. `maxMinutes` is null when the source states a
+ * single time; it is only populated when the source states a range. An exact
+ * time is never encoded as min === max.
+ */
+export const TimeRangeSchema = z.object({
+  minMinutes: z.number().int().positive(),
+  maxMinutes: z.number().int().positive().nullable(),
+});
+
 export const SourceSchema = z.object({
   platform: PlatformSchema,
   creator: z.string().min(1).nullable(),
@@ -30,8 +40,8 @@ export const ExtractedRecipeSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1).nullable(),
   servings: z.number().int().positive().nullable(),
-  prepTimeMinutes: z.number().int().nonnegative().nullable(),
-  cookTimeMinutes: z.number().int().nonnegative().nullable(),
+  prepTime: TimeRangeSchema.nullable(),
+  cookTime: TimeRangeSchema.nullable(),
   ingredients: z.array(IngredientSchema),
   instructions: z.array(z.string().min(1)),
 });
@@ -43,6 +53,7 @@ export const RecipeSchema = ExtractedRecipeSchema.extend({
 });
 
 export type Platform = z.infer<typeof PlatformSchema>;
+export type TimeRange = z.infer<typeof TimeRangeSchema>;
 export type Ingredient = z.infer<typeof IngredientSchema>;
 export type Source = z.infer<typeof SourceSchema>;
 export type ExtractedRecipe = z.infer<typeof ExtractedRecipeSchema>;

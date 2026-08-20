@@ -70,8 +70,8 @@ A recipe should support:
 - title
 - description optional
 - servings optional
-- prepTimeMinutes optional
-- cookTimeMinutes optional
+- prepTime optional
+- cookTime optional
 - ingredients
 - instructions
 - source
@@ -85,6 +85,16 @@ An ingredient should distinguish:
 - name
 - preparation
 - rawText
+
+prepTime and cookTime use a shared TimeRange shape:
+
+- minMinutes
+- maxMinutes optional
+
+A single stated duration sets minMinutes with maxMinutes null.
+A stated range sets both. An exact time is never encoded as min equal to max.
+Populate these only when the source explicitly states the duration; never sum
+step durations into a total.
 
 Source should include:
 

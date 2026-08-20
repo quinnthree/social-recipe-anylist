@@ -28,6 +28,20 @@ const SYSTEM_PROMPT = [
   "- `instructions` must contain only steps stated in the source text, in order,",
   "  one step per array entry. Do not add preheating, resting, or serving steps",
   "  that the source text does not mention.",
+  "- Populate `prepTime` and `cookTime` only when the source explicitly states",
+  "  that duration. Otherwise return null.",
+  "  - A single stated time goes in `minMinutes` with `maxMinutes` set to null.",
+  "    \"40 minutes\" is {minMinutes: 40, maxMinutes: null}.",
+  "  - A stated range puts the low end in `minMinutes` and the high end in",
+  "    `maxMinutes`. \"35-40 minutes\" is {minMinutes: 35, maxMinutes: 40}.",
+  "  - Never encode an exact time as a range where the two values are equal.",
+  "- Never calculate a total by adding up individual step durations. Use a total",
+  "  only when the source explicitly states one.",
+  "- A duration attached to a single step, such as \"saute for 5 minutes\", stays",
+  "  in that instruction. Do not promote it to `prepTime` or `cookTime` unless the",
+  "  source clearly presents it as the recipe's prep or cook duration. A stated",
+  "  baking or cooking duration such as \"bake at 350F for 35-40 minutes\" is the",
+  "  cook time.",
   "- `title` should be the dish name as stated in the source. If no dish name is",
   "  stated, use a short literal description of the dish drawn from the text.",
   "- If the text is not a recipe, return an empty ingredients array and an empty",
@@ -94,6 +108,20 @@ function createClient(): Anthropic {
   }
 }
 
+/** An explicitly stated numeric duration, including ranges such as "35-40 minutes". */
+const DURATION_PATTERN =
+  /\b\d+(?:\s*(?:[-\u2010-\u2015~]|to)\s*\d+)?\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\b/i;
+
+/**
+ * Reports whether an explicit duration survives anywhere in the extracted
+ * recipe. Used only to keep warnings truthful — it never contributes a value to
+ * the recipe itself.
+ */
+function mentionsDuration(extracted: ExtractedRecipe): boolean {
+  const text = [extracted.description ?? "", ...extracted.instructions].join("\n");
+  return DURATION_PATTERN.test(text);
+}
+
 /**
  * Derives confidence and warnings from what was actually extracted. Entirely
  * deterministic — the model has no say in either value.
@@ -128,8 +156,13 @@ export function assessExtraction(
     confidence -= 0.05;
   }
 
-  if (extracted.prepTimeMinutes === null && extracted.cookTimeMinutes === null) {
-    warnings.push("No prep or cook time was stated in the source text.");
+  if (extracted.prepTime === null && extracted.cookTime === null) {
+    // Only claim a time was absent if none appears in what we actually extracted.
+    warnings.push(
+      mentionsDuration(extracted)
+        ? "A duration appears in the recipe text but was not captured as a structured prep or cook time."
+        : "No prep or cook time was stated in the source text.",
+    );
     confidence -= 0.05;
   }
 
