@@ -2,9 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
-import type { SourceContent } from "./social/types.js";
-import type { Recipe } from "./recipe/schema.js";
-import { parseArgs, runImport } from "./index.js";
+import { parseArgs } from "./index.js";
 
 const run = promisify(execFile);
 
@@ -76,76 +74,27 @@ describe("parseArgs", () => {
   });
 });
 
-describe("runImport", () => {
+describe("CLI output contract", () => {
   const URL = "https://www.tiktok.com/@creator/video/7123456789";
 
-  const content: SourceContent = {
-    platform: "tiktok",
-    url: URL,
-    creator: "creator",
-    text: "Cottage cheese brownies",
-    textSource: "caption",
-  };
+  it("prints only the usage error and nothing on stdout for a bad flag", async () => {
+    const { stdout, stderr } = await runCli(URL, "--dryrun");
 
-  const recipe: Recipe = {
-    title: "Cottage Cheese Brownies",
-    description: null,
-    servings: 9,
-    prepTime: null,
-    cookTime: { minMinutes: 35, maxMinutes: 40 },
-    ingredients: [
-      { quantity: "16", unit: "oz", name: "cottage cheese", preparation: null, rawText: "16 oz cottage cheese" },
-    ],
-    instructions: ["Blend until smooth."],
-    source: { platform: "tiktok", creator: "creator", url: URL },
-    confidence: 1,
-    warnings: [],
-  };
+    expect(stdout).toBe("");
+    expect(stderr).toContain('Unknown flag "--dryrun"');
+  }, 30_000);
 
-  function deps(overrides: { createSaver?: () => never } = {}) {
-    return {
-      fetchSourceContent: async () => content,
-      parseRecipe: async () => recipe,
-      createSaver:
-        overrides.createSaver ??
-        (() => ({ save: async () => ({ name: recipe.title, identifier: "server-id" }) })),
-    };
-  }
+  it("still rejects an unsupported platform after the service refactor", async () => {
+    const { stdout, stderr } = await runCli("https://youtube.com/watch?v=abc");
 
-  it("prints the recipe JSON on a dry run", async () => {
-    const output = await runImport({ url: URL, dryRun: true }, deps());
+    expect(stdout).toBe("");
+    expect(stderr).toContain("Unsupported platform for host");
+  }, 30_000);
 
-    expect(JSON.parse(output)).toEqual(recipe);
-  });
+  it("still rejects an unsupported platform on a dry run", async () => {
+    const { stdout, stderr } = await runCli("https://youtube.com/watch?v=abc", "--dry-run");
 
-  it("never constructs the AnyList adapter on a dry run", async () => {
-    const createSaver = (): never => {
-      throw new Error("AnyList must not be constructed during a dry run");
-    };
-
-    await expect(
-      runImport({ url: URL, dryRun: true }, deps({ createSaver })),
-    ).resolves.toContain("Cottage Cheese Brownies");
-  });
-
-  it("saves and reports success on a normal run", async () => {
-    const output = await runImport({ url: URL, dryRun: false }, deps());
-
-    expect(output).toBe("✓ Cottage Cheese Brownies saved to AnyList");
-  });
-
-  it("does not report success when verification fails", async () => {
-    const failing = {
-      ...deps(),
-      createSaver: () => ({
-        save: async () => {
-          throw new Error("AnyList accepted the save request, but the recipe could not be verified in the account.");
-        },
-      }),
-    };
-
-    await expect(runImport({ url: URL, dryRun: false }, failing)).rejects.toThrow(
-      "could not be verified",
-    );
-  });
+    expect(stdout).toBe("");
+    expect(stderr).toContain("Unsupported platform for host");
+  }, 30_000);
 });

@@ -21,9 +21,24 @@ export interface SocialAdapter {
   fetchSourceContent(url: string): Promise<SourceContent>;
 }
 
+/**
+ * Why extraction failed, as a stable discriminator. Callers classify on this,
+ * never on the human-readable message.
+ */
+export type ExtractionErrorCode =
+  /** The string is not a usable http(s) URL. */
+  | "invalid_url"
+  /** A valid URL, but not an Instagram or TikTok host. */
+  | "unsupported_platform"
+  /** The right kind of URL, but the source text could not be obtained. */
+  | "source_unavailable";
+
 /** Thrown when a platform's source text cannot be obtained or is unusable. */
 export class ExtractionError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly code: ExtractionErrorCode,
+  ) {
     super(message);
     this.name = "ExtractionError";
   }

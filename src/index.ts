@@ -2,10 +2,7 @@ import { pathToFileURL } from "node:url";
 
 import { config } from "dotenv";
 
-import { AnyListRecipeSaver } from "./anylist/client.js";
-import type { RecipeSaver } from "./anylist/types.js";
-import { parseRecipe } from "./recipe/parser.js";
-import { fetchSourceContent } from "./social/index.js";
+import { importRecipe } from "./app/import-service.js";
 
 // quiet: keep stdout to the recipe JSON / success line alone.
 config({ quiet: true });
@@ -41,38 +38,13 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   return { url: url.trim(), dryRun };
 }
 
-export interface ImportDeps {
-  fetchSourceContent: typeof fetchSourceContent;
-  parseRecipe: typeof parseRecipe;
-  createSaver: () => RecipeSaver;
-}
-
-/** Runs the pipeline and returns what should be printed to stdout. */
-export async function runImport(
-  { url, dryRun }: CliArgs,
-  { fetchSourceContent: fetchContent, parseRecipe: parse, createSaver }: ImportDeps,
-): Promise<string> {
-  const content = await fetchContent(url);
-  const recipe = await parse(content);
-
-  if (dryRun) {
-    // createSaver is never called, so AnyList is never imported, constructed,
-    // authenticated, or contacted.
-    return JSON.stringify(recipe, null, 2);
-  }
-
-  const result = await createSaver().save(recipe);
-  return `✓ ${result.name} saved to AnyList`;
-}
-
 async function main(): Promise<void> {
-  const output = await runImport(parseArgs(process.argv.slice(2)), {
-    fetchSourceContent,
-    parseRecipe,
-    createSaver: () => AnyListRecipeSaver.fromEnvironment(),
-  });
+  const { url, dryRun } = parseArgs(process.argv.slice(2));
+  const { recipe, saved } = await importRecipe(url, { dryRun });
 
-  console.log(output);
+  // Dry run prints the Recipe JSON; a real run prints the success line only
+  // after AnyList has verified the save.
+  console.log(saved === null ? JSON.stringify(recipe, null, 2) : `✓ ${saved.name} saved to AnyList`);
 }
 
 /** Only run when invoked as the CLI, so tests can import parseArgs safely. */

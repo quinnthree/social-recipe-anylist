@@ -126,6 +126,32 @@ URL
 
 Do not connect AnyList until this pipeline works.
 
+## Local HTTP API
+
+Milestone 3 exposes the same import pipeline over HTTP for a future iPhone
+Shortcut. Local only; not deployed.
+
+npm run server       start on 127.0.0.1:3000
+npm run server:dev   same, with reload
+
+GET  /health      unauthenticated; proves the process is alive and nothing else
+POST /api/import  requires Authorization: Bearer <RECIPE_API_KEY>
+
+The CLI and the API both call importRecipe() in src/app/import-service.ts.
+Neither reimplements the pipeline. buildServer() is separate from listen()
+so tests never open a port.
+
+The server refuses to start when RECIPE_API_KEY is missing or empty.
+
+### Retry and duplicate risk
+
+The API is synchronous and has no idempotency. A request runs source
+extraction, a Claude call, and an AnyList save-and-verify, so it can take tens
+of seconds. If a client times out and retries, the first request may still
+complete and AnyList will hold two copies of the recipe. Duplicate detection is
+deliberately not implemented. Decide retry behaviour when designing the
+Shortcut.
+
 ## Known Issues
 
 @anylist-napi/anylist-napi persists prepTime and cookTime as 0 (upstream bug).

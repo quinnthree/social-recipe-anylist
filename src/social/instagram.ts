@@ -34,11 +34,11 @@ export const instagramAdapter: SocialAdapter = {
       });
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
-      throw new ExtractionError(`${UNAVAILABLE} (request failed: ${detail})`);
+      throw new ExtractionError(`${UNAVAILABLE} (request failed: ${detail})`, "source_unavailable");
     }
 
     if (!response.ok) {
-      throw new ExtractionError(`${UNAVAILABLE} (HTTP ${response.status})`);
+      throw new ExtractionError(`${UNAVAILABLE} (HTTP ${response.status})`, "source_unavailable");
     }
 
     const html = await response.text();
@@ -50,6 +50,7 @@ export const instagramAdapter: SocialAdapter = {
       throw new ExtractionError(
         `${UNAVAILABLE} (the response contained no usable og:description caption — ` +
           `this usually means Instagram served a login wall)`,
+        "source_unavailable",
       );
     }
 

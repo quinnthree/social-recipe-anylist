@@ -8,6 +8,8 @@
     "test": "vitest run",
     "dev": "tsx src/index.ts",
     "import": "tsx src/index.ts",
+    "server": "tsx src/server.ts",
+    "server:dev": "tsx watch src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

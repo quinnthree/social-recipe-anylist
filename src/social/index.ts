@@ -25,11 +25,14 @@ export function detectPlatform(url: string): Platform {
   try {
     parsed = new URL(url);
   } catch {
-    throw new ExtractionError(`"${url}" is not a valid URL.`);
+    throw new ExtractionError(`"${url}" is not a valid URL.`, "invalid_url");
   }
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new ExtractionError(`Unsupported URL scheme "${parsed.protocol}". Expected http or https.`);
+    throw new ExtractionError(
+      `Unsupported URL scheme "${parsed.protocol}". Expected http or https.`,
+      "invalid_url",
+    );
   }
 
   const hostname = parsed.hostname.toLowerCase();
@@ -39,6 +42,7 @@ export function detectPlatform(url: string): Platform {
 
   throw new ExtractionError(
     `Unsupported platform for host "${parsed.hostname}". Expected an Instagram or TikTok URL.`,
+    "unsupported_platform",
   );
 }
 
