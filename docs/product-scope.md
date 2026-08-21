@@ -64,6 +64,35 @@ Every one of these is something AnyList already does, or something that turns
 this into a different product. AnyList owns the recipe after export. We own
 getting it there.
 
+## V1 acceptance bar: the minimum usable recipe
+
+An extraction succeeds only if it produced something a person could actually
+cook from. Deterministically:
+
+- a non-blank **title**, and
+- at least one **ingredient**, and
+- at least one **instruction**
+
+Anything less is an extraction failure, not a low-quality success. This is a
+structural rule, **not** a confidence threshold — QA established that current
+`confidence` does not correlate reliably enough with whether edits are needed
+to serve as an acceptance gate (ADR-019).
+
+`confidence` and `warnings` remain extraction-time assessment. They do not
+decide this rule, and a recipe carrying warnings is still a normal, exportable
+recipe.
+
+## No Undo
+
+Programmatic deletion in AnyList is unreliable — `deleteRecipe()` has been
+observed returning success without removing the recipe (ADR-021). V1 therefore
+offers **no Undo and no automatic rollback** of an export. Correction happens in
+AnyList itself.
+
+This is a product consequence of a measured platform limitation, and it is the
+main reason export idempotency matters: a duplicate we create cannot be cleaned
+up for the user.
+
 ## What this means in practice
 
 - We do not need a recipe database to ship V1. The canonical Recipe is a

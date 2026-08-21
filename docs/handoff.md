@@ -18,7 +18,12 @@ app.
 
 The Wave 0 contract revision is complete: idempotency semantics, schema
 versioning, source provenance, auth scope, and the canonical platform value set
-are all frozen. See ADR-010 through ADR-015.
+are all frozen. See ADR-010 through ADR-016.
+
+**Milestone 4 amendment (2026-08-21).** Backend planning, AnyList production
+research, and independent QA are complete, and their findings are folded into
+the contracts. See ADR-017 through ADR-024, and the RESEARCH-PROVEN section of
+`architecture.md`.
 
 ## Rules for all parallel agents
 
@@ -56,35 +61,79 @@ Implements the approved Part 2 contracts:
   strict inbound validation and rejection of unsupported versions (ADR-011).
 - `Idempotency-Key` with the frozen semantics and states (ADR-012).
 
-**First task, before implementing idempotency:** compare the smallest
-appropriate **Vercel-compatible durable stores** and propose one with evidence.
-An in-process map is explicitly unacceptable. The semantics are frozen; only the
-storage choice is open.
+**Storage is now decided:** Upstash Redis via the Vercel Marketplace, behind an
+`IdempotencyStore` abstraction, 24-hour retention, atomic transitions (ADR-017).
+Required on `POST /api/exports/anylist` only.
+
+Also in scope, all newly approved:
+
+- Request fingerprint: validate → normalise → deterministic serialise → SHA-256
+  (ADR-018). Never compare raw bytes.
+- `X-Request-Id` on **every** response, plus `originalRequestId` on replays.
+- `409` (three distinct messages), `413`, `415`. **These do not work today** —
+  an oversized body currently returns 500 and a wrong content type returns 400.
+- Body limits: 8 KB for both import routes, 64 KB for export.
+- Minimum usable recipe gate: non-blank title + ≥1 ingredient + ≥1 instruction
+  (ADR-019). Not a confidence threshold.
+- Inbound hardening: strict bodies, whitespace-only titles rejected,
+  `http:`/`https:` only, `maxMinutes < minMinutes` rejected (ADR-024).
+- `AnyListError.code` and the state mapping in ADR-020.
 
 **Must not:** recompute `confidence`/`warnings` on export (ADR-010); auto-retry
-`createRecipe` after an ambiguous write (ADR-012); implement YouTube ingestion;
-apply the YouTube enum change without approval.
+`createRecipe` after an ambiguous write (ADR-012, ADR-020); treat a stale
+`IN_PROGRESS` as retryable (ADR-012 as amended); introduce a confidence
+threshold (ADR-019); build rollback or Undo on `deleteRecipe()` (ADR-021); store
+application data in Redis (ADR-017); implement YouTube ingestion; change parser
+contracts for telemetry (`inputTokens`/`outputTokens` may stay `null`).
 
-### 2. AnyList production research
+**Known bug to fix while implementing ADR-024:** `buildNote()` in
+`src/anylist/mapping.ts` renders any non-null `maxMinutes` as a range, so an
+inbound `{40, 40}` becomes `"40–40 minutes"`. Accepting that shape without
+fixing the renderer produces wrong output.
+
+**Already corrected (2026-08-21):** the "server-assigned" wording in
+`src/anylist/client.ts` and the affected test descriptions, plus the stale
+`CLAUDE.md` claims. Comments and names only. Note that `getRecipeById` loads the
+full user-data blob and filters client-side, so verification is not a cheap
+targeted read — relevant if export latency becomes a concern.
+
+### 2. AnyList production research — round 2
 
 **Owns:** research output only. **Writes no production code** outside
 `src/anylist/` and does not change the `RecipeSaver` interface without approval.
 
-Questions to answer with evidence:
+Round 1 is complete; findings are recorded in `architecture.md` and ADR-020
+through ADR-023. Remaining questions:
 
-- The `prepTime`/`cookTime` zero-persistence bug: is it fixable upstream, is
-  there a working field combination, or is the note workaround permanent?
+- **Native stderr leakage (highest priority).** Do failed and restored-token
+  flows produce the same `set-cookie` leakage observed on failed login? This
+  gates broad deployment (ADR-023).
+- Can native stderr be intercepted or suppressed at all from JavaScript, given
+  the library writes to the descriptor directly?
 - Account limits: is anything rate-limited, and does the free tier
   (`isPremiumUser: false`) constrain recipe count or features?
-- Token reuse: `getTokens()`/`fromTokens()` exist and we deliberately do not use
-  them. What would safe reuse look like, and what does a fresh login per request
-  actually cost in latency?
 - Failure modes under real conditions: duplicate names, very long fields,
   unusual characters, concurrent writes.
 - Dependency risk: one maintainer, one published version, an unauditable native
   binary. What is the contingency?
 
-### 3. Independent QA / regression
+**Settled, do not re-litigate:** deletion is unreliable (ADR-021); recipe ids are
+client-generated (ADR-021); `prepTime`/`cookTime` do persist correctly, and the
+note behaviour stays as conservative compatibility (ADR-021 context); token
+restore works but does not reduce credential risk (ADR-022).
+
+### 3. Independent QA / regression — round 2
+
+Round 1 established a **golden corpus** labelled `ZERO_EDIT_EXPECTED`,
+`EDIT_EXPECTED`, and `FAIL_EXPECTED`, plus a current baseline. Key finding:
+**warnings do not automatically imply that editing is required**, and current
+`confidence` does not correlate reliably enough to gate acceptance (ADR-019).
+
+The golden corpus is now the **durable extraction-quality benchmark**. Any
+future threshold must be justified against it. Do not introduce one based on
+current scores.
+
+Remaining scope:
 
 **Owns:** test files and QA tooling. **Does not modify production source.**
 
@@ -123,6 +172,13 @@ contract is frozen. The contract is the dependency, not the implementation.
 | Static bearer token | Prototype-only; must not ship in an App Store binary (ADR-014) |
 | YouTube | Canonically supported, ingestion deferred; enum change proposed not applied (ADR-015) |
 
+## Preview environment policy
+
+Do **not** configure production `ANYLIST_EMAIL` / `ANYLIST_PASSWORD` in Vercel
+Preview environments. Until a disposable AnyList account or session exists,
+Preview may exercise **extraction paths only**; live AnyList export verification
+is **Production or manual** only.
+
 ## Still open
 
 - **The YouTube enum source change awaits approval.** Written out exactly in
@@ -132,3 +188,9 @@ contract is frozen. The contract is the dependency, not the implementation.
 - **Whether an unimplemented-but-canonical platform deserves a distinct status
   code** (`501` rather than `400 Unsupported platform`). Separate contract
   change, not proposed.
+- **Native stderr mitigation** (ADR-023). Gates broad deployment, not Wave 1.
+- **Instagram public-endpoint hardening** — redirect re-validation and
+  login-wall detection, in the adapter, not the HTTP layer. Required before
+  public exposure; not implemented and not part of this amendment.
+- **The multimodal escalation trigger is undetermined** (ADR-009 as amended).
+  It is no longer assumed to be confidence-based.

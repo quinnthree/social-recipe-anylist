@@ -178,9 +178,16 @@ that can be extracted from a caption should be, cheaply. Escalation should be th
 exception, and should be measured before it is built.
 
 **Consequences.** `confidence` and `warnings` must be computed deterministically
-and must stay meaningful — they are the future gate, which is why the model is
-not permitted to report its own confidence. Telemetry on confidence
-distribution is a prerequisite for choosing the threshold.
+and must stay meaningful, which is why the model is not permitted to report its
+own confidence.
+
+**Amended 2026-08-21.** This ADR originally named `confidence` as *the* gate.
+QA has since established that current `confidence` does not correlate reliably
+enough with whether a recipe needs editing to serve that role. The escalation
+trigger is therefore **undetermined** — it may be completeness-based,
+signal-based, or a revised score. `confidence` remains useful telemetry and an
+input to that future decision, but it is no longer designated as the mechanism.
+See ADR-019, which also removes it from the acceptance path.
 
 
 ---
@@ -247,6 +254,13 @@ build against them.
 **Consequences.** No automatic retry of `createRecipe` after an ambiguous
 external-write failure, ever. The `FAILED_SAFE` / `AMBIGUOUS` distinction is
 load-bearing: only the former is retryable.
+
+**Amended 2026-08-21.** The storage question is now settled — see ADR-017. Two
+rules were also tightened: `FAILED_SAFE → IN_PROGRESS` must be an **atomic
+re-claim**, not just `NEW → IN_PROGRESS`; and a **stale `IN_PROGRESS` record does
+not become retryable by ageing**. Absent positive evidence that `createRecipe`
+was never reached, a stale `IN_PROGRESS` is treated as `AMBIGUOUS`. Expiry is
+not evidence of safety.
 
 **This is explicitly not exactly-once against AnyList.** The AnyList API exposes
 no idempotency key, so a write that landed but whose outcome we never learned
@@ -346,3 +360,203 @@ runtime dependency on the recipe layer.
 **Note.** The enforcement lives in this derivation, **not** in the adapter map
 typing. An earlier proposal claimed the latter; that claim was wrong and is
 corrected in `contracts.md`.
+
+---
+
+## ADR-017 — Upstash Redis behind an IdempotencyStore abstraction
+
+**Status:** Accepted (2026-08-21). Completes the open question in ADR-012.
+
+**Decision.** Export idempotency uses **Upstash Redis via the Vercel
+Marketplace**, behind an `IdempotencyStore` abstraction. Retention 24 hours. The
+store must support atomic state transitions. Only
+`POST /api/exports/anylist` requires durable idempotency; `POST /api/imports` is
+read/compute-only and does not.
+
+**Why.** ADR-012 established that durable, shared state is required and that an
+in-process map is unacceptable on Vercel. Upstash is the smallest thing that
+provides atomic compare-and-set with a TTL on that platform. The abstraction
+exists so the choice is reversible without touching route logic.
+
+**Consequences.** This is **request-coordination infrastructure only**. It is
+not a general application database and does **not** reopen the no-database scope
+decision in `product-scope.md`. Nothing about recipes is stored in it — only
+idempotency records: state, fingerprint, recorded result, and the originating
+request id. Anyone proposing to keep application data there is proposing a scope
+change.
+
+---
+
+## ADR-018 — Idempotency compares a normalised fingerprint, not raw bytes
+
+**Status:** Accepted (2026-08-21)
+
+**Decision.** "Same request" is decided by validating the request, normalising
+it to the accepted canonical shape, deterministically serialising it, and
+hashing with SHA-256. The fingerprint is stored on the idempotency record. Raw
+HTTP bytes are never compared.
+
+**Why.** Byte comparison makes JSON key ordering semantically significant. A
+client that re-serialises an identical recipe — a different JSON encoder, a
+round-trip through a Shortcut, a reordered field — would get
+`409 Idempotency key conflict` for a request that is, by every meaning that
+matters, the same. That is a false conflict the client cannot diagnose or fix.
+
+**Consequences.** Validation must run **before** fingerprinting, so the hash is
+over the accepted canonical shape rather than over whatever arrived. The
+normalisation must be deterministic and stable, since changing it silently
+invalidates every stored fingerprint.
+
+---
+
+## ADR-019 — The acceptance gate is a deterministic minimum, not a confidence threshold
+
+**Status:** Accepted (2026-08-21). Amends ADR-009.
+
+**Decision.** `POST /api/imports` succeeds only when extraction yields a
+**non-blank title, at least one ingredient, and at least one instruction**.
+Otherwise it returns the existing safe extraction-failure result. No confidence
+threshold is introduced.
+
+**Why.** QA built a golden corpus labelled `ZERO_EDIT_EXPECTED` /
+`EDIT_EXPECTED` / `FAIL_EXPECTED` and established that current `confidence` does
+not correlate reliably enough with whether edits are actually required. Gating
+acceptance on a score that does not predict the thing it would be gating would
+reject usable recipes and admit unusable ones, with no way for a user to tell
+which had happened. The structural minimum is the honest test: can a person
+cook from this at all.
+
+**Consequences.** `confidence` and `warnings` stay extraction-time assessment
+(ADR-010) and take no part in the accept/reject decision. **Warnings do not
+imply that editing is required.** The golden corpus becomes the durable
+extraction-quality benchmark, and any future threshold must be justified against
+it rather than against intuition.
+
+---
+
+## ADR-020 — AnyList reports facts; the application decides retry safety
+
+**Status:** Accepted (2026-08-21)
+
+**Decision.** `AnyListError` carries a `code` of `login_failed`,
+`create_failed`, `verify_unreadable`, or `verify_missing`. The AnyList layer
+reports **what happened** and nothing more. The application maps codes to
+idempotency states: `login_failed → FAILED_SAFE`; all three others →
+`AMBIGUOUS`.
+
+**Why.** Retry safety is not a property of the failure, it is a property of what
+the failure implies about an external side effect — a judgement that needs the
+idempotency context the adapter does not have. Only `login_failed` carries
+positive evidence that no write was attempted. A `createRecipe` exception proves
+nothing: the request may have been received and applied before the connection
+died.
+
+**Consequences.** Three of the four codes are non-retryable, deliberately. A
+`createRecipe` exception must **never** be classified as safely retryable
+without new evidence that no write could have occurred. This is the conservative
+direction on purpose, because the alternative — an unnecessary duplicate — is
+unfixable (ADR-021).
+
+---
+
+## ADR-021 — No rollback and no Undo: AnyList deletion is unreliable
+
+**Status:** Accepted (2026-08-21). RESEARCH-PROVEN.
+
+**Decision.** Treat programmatic AnyList deletion as unsupported for V1. Do not
+design automatic rollback, compensating transactions, or an Undo affordance
+around `deleteRecipe()`.
+
+**Why.** Measured: `deleteRecipe()` returns success **without removing the
+recipe**, and multiple request shapes produced HTTP 200 with no deletion. A
+rollback built on it would report success while leaving the duplicate in place —
+worse than no rollback, because it would be trusted.
+
+**Consequences.** Export idempotency is load-bearing rather than a nicety: a
+duplicate we create cannot be cleaned up for the user. Correction happens in
+AnyList itself. This is also why the `AMBIGUOUS` state refuses to retry.
+
+**Related correction.** The AnyList recipe identifier is **client-generated** by
+the library/protocol, not proven server-assigned. `createRecipe()` returning an
+id is therefore **not** persistence proof, and post-save `getRecipeById()`
+verification remains mandatory. Idempotency is not being redesigned around
+caller-controlled ids. Earlier documentation in this repository claimed
+server-assignment; that claim was wrong. A stale comment to that effect remains
+in `src/anylist/client.ts` and is a Wave 1 correction.
+
+---
+
+## ADR-022 — Token storage does not eliminate credential risk
+
+**Status:** Accepted (2026-08-21). RESEARCH-PROVEN.
+
+**Decision.** Record that `fromTokens()` restores a usable authenticated client
+without network validation, proven in a fresh process with `ANYLIST_EMAIL` and
+`ANYLIST_PASSWORD` absent; that a restored session performed `getRecipes`,
+`createRecipe`, and `getRecipeById`; that access tokens last ~3600 seconds and
+refresh tokens ~730 days without rotating during a forced refresh; and that
+multiple clients restored from one token blob operated concurrently without
+interference.
+
+The current `ANYLIST_EMAIL` / `ANYLIST_PASSWORD` model **remains** for the
+private Vercel proof and is explicitly temporary. Connect/disconnect
+architecture is not built now.
+
+**Why.** It is tempting to read "the password is no longer technically required"
+as "credential risk is solved". It is not. The stored refresh material is itself
+a long-lived bearer credential with account-level authority — a roughly two-year
+key to the account, which does not rotate, and which several clients can use at
+once. That is a different risk shape, not a smaller one.
+
+**Consequences.** Any future connect/disconnect design must treat stored session
+material with the same seriousness as a password: encrypted at rest, revocable,
+scoped, and never logged. **Do not describe token storage as eliminating
+credential risk** in any document or commit message.
+
+---
+
+## ADR-023 — Pino redaction is not protection against native stderr
+
+**Status:** Accepted (2026-08-21). RESEARCH-PROVEN.
+
+**Decision.** Record that on failed login the native Rust library writes
+diagnostic data — including HTTP response metadata with `set-cookie` values —
+**directly to stderr**, before any JavaScript logging or redaction can
+intercept it. On a deployed host this reaches platform logs.
+
+**Why.** Our redaction operates inside the Node process, on data we log. A
+native library writing to a file descriptor is outside that boundary entirely.
+Representing Pino redaction as complete protection would be a false security
+claim in a document other people build against.
+
+**Consequences.** Private smoke testing with known-good credentials is
+acceptable. **Broad consumer deployment requires investigation and mitigation
+first.** The AnyList research workstream must additionally test whether failed
+or restored-token flows produce equivalent leakage. Note that the Milestone 2
+migration removed the console-interception shim — there is currently no
+JavaScript-side interception of native output at all.
+
+---
+
+## ADR-024 — Strict validation at the untrusted boundary, not everywhere
+
+**Status:** Accepted (2026-08-21)
+
+**Decision.** Consumer-facing API request bodies are strict: unknown keys are
+rejected. Inbound hardening also rejects whitespace-only titles, restricts
+`source.url` to `http:`/`https:`, and rejects `maxMinutes < minMinutes` while
+permitting `maxMinutes === minMinutes`. Internal Zod objects are **not**
+required to be globally strict.
+
+**Why.** The security boundary is untrusted inbound API data, which is where
+strictness buys something real. Making every internal object strict would cause
+churn across the extraction pipeline for no safety gain, and churn during
+parallel waves is itself a risk (ADR-008).
+
+**Consequences.** A known contradiction is created and must be resolved in
+Wave 1: Milestone 1.1 froze "an exact time is never encoded as `min === max`" on
+the producer side, and `buildNote()` in `src/anylist/mapping.ts` treats any
+non-null `maxMinutes` as a range. An inbound `{40, 40}` would therefore render
+as `"40–40 minutes"`. Accepting the shape without fixing the renderer produces
+wrong output. The preferred producer form remains
+`{ minMinutes: n, maxMinutes: null }`.

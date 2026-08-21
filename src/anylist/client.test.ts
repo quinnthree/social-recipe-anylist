@@ -6,7 +6,7 @@ import { AnyListError } from "./types.js";
 
 const PASSWORD = "sup3r-s3cret-p@ssword";
 const EMAIL = "cook@example.com";
-const SERVER_ID = "server-assigned-recipe-id";
+const CREATED_ID = "recipe-id-from-create";
 
 const recipe: Recipe = {
   title: "Cottage Cheese Brownies",
@@ -43,13 +43,13 @@ function fakeClient(options: FakeOptions = {}) {
       calls.create += 1;
       calls.payloads.push(payload);
       if (options.createError !== undefined) throw options.createError;
-      return { id: SERVER_ID, name: payload.name };
+      return { id: CREATED_ID, name: payload.name };
     },
     async getRecipeById(recipeId) {
       calls.verify += 1;
       calls.verifiedIds.push(recipeId);
       if (options.verifyError !== undefined) throw options.verifyError;
-      return options.verifyResult === undefined ? { id: SERVER_ID } : options.verifyResult;
+      return options.verifyResult === undefined ? { id: CREATED_ID } : options.verifyResult;
     },
   };
 
@@ -73,11 +73,11 @@ function credentialBearingError(statusCode: number): Error {
 }
 
 describe("AnyListRecipeSaver.save", () => {
-  it("creates the recipe and returns the server-assigned id", async () => {
+  it("creates the recipe and returns the id createRecipe reported", async () => {
     const { connect, calls } = fakeClient();
     const result = await new AnyListRecipeSaver(connect).save(recipe);
 
-    expect(result).toEqual({ name: "Cottage Cheese Brownies", identifier: SERVER_ID });
+    expect(result).toEqual({ name: "Cottage Cheese Brownies", identifier: CREATED_ID });
     expect(calls.create).toBe(1);
   });
 
@@ -105,12 +105,12 @@ describe("AnyListRecipeSaver.save", () => {
   });
 
   describe("verification", () => {
-    it("verifies with a targeted read of the server-assigned id", async () => {
+    it("verifies by reading the recipe back by the id createRecipe reported", async () => {
       const { connect, calls } = fakeClient();
       await new AnyListRecipeSaver(connect).save(recipe);
 
       expect(calls.verify).toBe(1);
-      expect(calls.verifiedIds).toEqual([SERVER_ID]);
+      expect(calls.verifiedIds).toEqual([CREATED_ID]);
     });
 
     it("fails when the read returns nothing", async () => {
