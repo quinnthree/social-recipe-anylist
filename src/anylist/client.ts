@@ -48,6 +48,7 @@ export class AnyListRecipeSaver implements RecipeSaver {
     let created: { id: string; name: string };
     try {
       // createRecipe IS the persisted write in this library; there is no save().
+      // Its returned id is client-generated, so it is not persistence evidence.
       created = await client.createRecipe(payload);
     } catch (error) {
       throw new AnyListError(withStatus(SAVE_FAILED, error));
@@ -68,8 +69,13 @@ export class AnyListRecipeSaver implements RecipeSaver {
 }
 
 /**
- * Confirms the recipe exists server-side by reading back the server-assigned id.
- * Targeted: it never lists the whole collection and never writes anything.
+ * Confirms the recipe really persisted, by reading it back by id.
+ *
+ * The id is generated client-side by the AnyList library, so createRecipe()
+ * returning one is not proof of persistence — this read is. Note that
+ * getRecipeById is targeted only in its API shape: the protocol exposes a
+ * single read endpoint (data/user-data/get), so the library fetches the whole
+ * user-data blob and filters client-side. It performs no write.
  */
 async function verifyPersisted(client: AnyListClientLike, id: string): Promise<void> {
   let stored: { id: string } | null;
