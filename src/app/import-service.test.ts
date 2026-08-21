@@ -98,7 +98,7 @@ describe("importRecipe", () => {
       const failing = deps({
         createSaver: () => ({
           save: async () => {
-            throw new AnyListError("Failed to save the recipe to AnyList.");
+            throw new AnyListError("Failed to save the recipe to AnyList.", "create_failed");
           },
         }),
       });

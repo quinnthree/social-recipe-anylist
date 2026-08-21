@@ -78,7 +78,7 @@ describe("toAnyListRecipe", () => {
       expect(mapped.cookTime).not.toBe(40 * 60);
     });
 
-    it("records an exact time in the note, since the numeric field may persist as 0", () => {
+    it("records an exact time in the note as well as the numeric field", () => {
       const mapped = toAnyListRecipe(
         recipe({ cookTime: { minMinutes: 40, maxMinutes: null } }),
       );
@@ -93,6 +93,49 @@ describe("toAnyListRecipe", () => {
 
       expect(mapped.cookTime).toBe(35);
       expect(mapped.note).toBe("Cook time stated in source: 35–40 minutes");
+    });
+
+    describe("an exact time, in both forms the contract admits", () => {
+      // Our own extraction produces maxMinutes: null, and that stays preferred.
+      // A client may legitimately send maxMinutes === minMinutes instead, and
+      // "40–40 minutes" must never reach a user's recipe note.
+      it("renders maxMinutes: null as a single time", () => {
+        const mapped = toAnyListRecipe(recipe({ cookTime: { minMinutes: 40, maxMinutes: null } }));
+
+        expect(mapped.note).toBe("Cook time stated in source: 40 minutes");
+        expect(mapped.cookTime).toBe(40);
+      });
+
+      it("renders maxMinutes === minMinutes as the same single time", () => {
+        const mapped = toAnyListRecipe(recipe({ cookTime: { minMinutes: 40, maxMinutes: 40 } }));
+
+        expect(mapped.note).toBe("Cook time stated in source: 40 minutes");
+        expect(mapped.note).not.toContain("40–40");
+        expect(mapped.cookTime).toBe(40);
+      });
+
+      it("still renders a genuine range as a range", () => {
+        const mapped = toAnyListRecipe(recipe({ cookTime: { minMinutes: 35, maxMinutes: 40 } }));
+
+        expect(mapped.note).toBe("Cook time stated in source: 35–40 minutes");
+        expect(mapped.cookTime).toBe(35);
+      });
+
+      // TimeRangeSchema does not order the bounds, so an inverted pair is
+      // structurally admissible. Rendering it as "40–20 minutes" would be worse
+      // than dropping the bound that was never a range in the first place.
+      it("does not render an inverted pair as a range", () => {
+        const mapped = toAnyListRecipe(recipe({ cookTime: { minMinutes: 40, maxMinutes: 20 } }));
+
+        expect(mapped.note).toBe("Cook time stated in source: 40 minutes");
+      });
+
+      it("applies the same rule to prep time", () => {
+        const mapped = toAnyListRecipe(recipe({ prepTime: { minMinutes: 15, maxMinutes: 15 } }));
+
+        expect(mapped.note).toBe("Prep time stated in source: 15 minutes");
+        expect(mapped.prepTime).toBe(15);
+      });
     });
 
     it("never averages a range", () => {
