@@ -287,13 +287,49 @@ first time (ADR-007). Version 1 is the shape documented in Part 1.
 
 **Upstash Redis via the Vercel Marketplace**, behind an `IdempotencyStore`
 abstraction so the backing store can be replaced without touching route logic.
-Retention **24 hours**.
 
 This is **request-coordination infrastructure only**. It is not a general
 application database and does not reopen the no-database scope decision
 (ADR-017). The store must support **atomic state transitions** — specifically
 `NEW → IN_PROGRESS` and `FAILED_SAFE → IN_PROGRESS` must be atomic claims, or
 two concurrent same-key requests can both believe they won.
+
+### Retention is state-dependent (QA-021)
+
+A single flat 24-hour TTL is **unsafe** and was corrected. If an `IN_PROGRESS`
+or `AMBIGUOUS` record simply expired, the same `Idempotency-Key` would become
+`NEW` again and could perform a second AnyList write **solely because time
+passed** — which directly contradicts "a stale `IN_PROGRESS` is not evidence of
+safety". Expiry is not evidence.
+
+| State | Record retention | Behaviour |
+|---|---|---|
+| `COMPLETED` | 24 hours (replay window) | Replay the recorded result. After the window, ordinary key reuse may eventually be permitted per implementation policy. |
+| `FAILED_SAFE` | 24 hours | Retry permitted, via the atomic `FAILED_SAFE → IN_PROGRESS` transition. |
+| `IN_PROGRESS` | **Not a plain 24-hour TTL.** May carry a 30-day record TTL. | Persist long enough to defeat delayed retries. Staleness is decided by an explicit lease, never by record expiry. Age alone must **never** return it to `NEW`. |
+| `AMBIGUOUS` | **30 days** (V1) | `409 Export outcome unknown` for the whole period. Never execute `createRecipe` again merely because the ordinary replay window elapsed. |
+
+### Record TTL and execution lease are two different things
+
+This distinction is the mechanism that makes the table above work, and it must
+not be collapsed:
+
+- **Record TTL** — how long the idempotency record exists in Upstash. Record
+  preservation only.
+- **`leaseExpiresAt`** — an explicit timestamp stored *on* the record, saying how
+  long active execution is still expected.
+
+Rules:
+
+- A **stale execution lease does not delete the record.**
+- When the lease is stale, the record transitions **atomically** to `AMBIGUOUS`.
+- The store must atomically convert or interpret a stale `IN_PROGRESS` as
+  `AMBIGUOUS` **before any new claim can be made** against that key. A reader
+  must never observe stale `IN_PROGRESS` and treat it as claimable.
+
+An `IN_PROGRESS` record may therefore hold a 30-day TTL alongside a much shorter
+`leaseExpiresAt`. The long TTL preserves the uncertainty; the short lease says
+nobody is still working on it.
 
 ### Frozen states
 
@@ -328,6 +364,13 @@ repeated. What it cannot prevent: a write that landed while we lost the answer.
 RESEARCH-PROVEN and compounding this: `deleteRecipe()` returns success without
 deleting, so a duplicate we create **cannot be cleaned up programmatically**
 (ADR-021). That is precisely why the `AMBIGUOUS` path refuses to retry.
+
+**And after 30 days, protection ends.** Once an `AMBIGUOUS` record is gone, the
+same key is reusable and a second write becomes possible again. Thirty days is a
+pragmatic bound on how long we hold uncertainty, not a proof of anything.
+**Do not claim indefinite duplicate prevention.** True exactly-once protection
+remains impossible while AnyList exposes no native idempotency key — the
+retention policy narrows the window, it does not close it.
 
 ## Request fingerprint — PROPOSED
 
@@ -443,13 +486,40 @@ enough with whether edits are required to gate acceptance on it (ADR-019).
 not participate in this decision, and a recipe carrying warnings is a normal,
 successful, exportable recipe.
 
+### Where the rule lives (QA-003)
+
+Implement the check at the **shared application / import-service boundary**
+wherever practical, not inside the `/api/imports` route handler.
+
+Otherwise the legacy `POST /api/import` convenience path keeps writing obviously
+empty recipes into AnyList simply because it predates `/api/imports` — the same
+extraction, held to a weaker standard, on the path that actually writes.
+`importRecipe()` already exists as that shared boundary.
+
+`POST /api/import` is **not removed**. It keeps its role for CLI and internal
+use; it just stops being exempt from the minimum.
+
 ## Canonical input hardening — PROPOSED
 
 Applies to **untrusted inbound API data**. That is the security boundary; it is
 deliberately not a mandate to make every internal Zod object strict, which would
 cause churn for no safety gain.
 
-**A. Title.** Whitespace-only titles are rejected. `min(1)` alone admits `"   "`.
+**A. Semantic non-blank text (QA-023).** `min(1)` admits `"   "`, which is not
+meaningful text. At the consumer API boundary, values are trimmed and required to
+be non-blank:
+
+| Field | Rule |
+|---|---|
+| `title` | trimmed, non-blank |
+| `ingredients[].name` | trimmed, non-blank |
+| `ingredients[].rawText` | trimmed, non-blank where the canonical schema requires it |
+| `instructions[]` entries | trimmed, non-blank |
+| `quantity`, `unit`, `preparation` | **nullable model preserved.** `null` stays a valid, meaningful "not stated". But a non-null whitespace-only value is not accepted as meaningful text. |
+
+The canonical recipe **structure is not redesigned**: nullable stays nullable,
+no fields are added or removed. This is validation strictness at the untrusted
+boundary, nothing more.
 
 **B. `source.url`.** Inbound consumer-API recipes accept **only** `http:` and
 `https:` schemes.
@@ -573,6 +643,20 @@ currently carries that evidence.
 This is stricter than it may look: three of the four codes are non-retryable.
 That is deliberate, and it follows directly from `deleteRecipe()` being
 unreliable — an unnecessary duplicate cannot be cleaned up (ADR-020, ADR-021).
+
+### Missing AnyList configuration uses `login_failed`
+
+Missing or empty `ANYLIST_EMAIL` / `ANYLIST_PASSWORD` reports `login_failed` for
+V1. This is a deliberate simplification, and it is worth naming what it costs:
+it **collapses deployment misconfiguration and genuine credential failure into
+the same `FAILED_SAFE` class**.
+
+That is safe — neither reached AnyList, so neither could have written — but it is
+lossy for diagnosis. An operator seeing `login_failed` cannot tell "the secret
+is missing from this environment" from "the password is wrong".
+
+A `config_missing` discriminator may be added later if the consumer or
+operations layer needs to distinguish them. Not required for V1.
 
 ## APPLIED — YouTube in the canonical enum, and the Platform boundary
 

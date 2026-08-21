@@ -368,8 +368,9 @@ corrected in `contracts.md`.
 **Status:** Accepted (2026-08-21). Completes the open question in ADR-012.
 
 **Decision.** Export idempotency uses **Upstash Redis via the Vercel
-Marketplace**, behind an `IdempotencyStore` abstraction. Retention 24 hours. The
-store must support atomic state transitions. Only
+Marketplace**, behind an `IdempotencyStore` abstraction. The store must support
+atomic state transitions. **Retention is state-dependent — see ADR-025**, which
+supersedes the flat 24-hour retention this ADR originally specified. Only
 `POST /api/exports/anylist` requires durable idempotency; `POST /api/imports` is
 read/compute-only and does not.
 
@@ -381,8 +382,8 @@ exists so the choice is reversible without touching route logic.
 **Consequences.** This is **request-coordination infrastructure only**. It is
 not a general application database and does **not** reopen the no-database scope
 decision in `product-scope.md`. Nothing about recipes is stored in it — only
-idempotency records: state, fingerprint, recorded result, and the originating
-request id. Anyone proposing to keep application data there is proposing a scope
+idempotency records: state, fingerprint, recorded result, the originating
+request id, and (per ADR-025) an explicit `leaseExpiresAt`. Anyone proposing to keep application data there is proposing a scope
 change.
 
 ---
@@ -432,6 +433,14 @@ imply that editing is required.** The golden corpus becomes the durable
 extraction-quality benchmark, and any future threshold must be justified against
 it rather than against intuition.
 
+**Amended 2026-08-21 (QA-003).** The rule belongs at the **shared
+application / import-service boundary** wherever practical, not in the
+`/api/imports` route handler. Placing it in the route would leave the legacy
+`POST /api/import` path writing obviously empty recipes to AnyList purely
+because it predates `/api/imports` — the weaker standard applied to the path
+that actually writes. `importRecipe()` is that shared boundary.
+`POST /api/import` is **not** removed; it simply stops being exempt.
+
 ---
 
 ## ADR-020 — AnyList reports facts; the application decides retry safety
@@ -456,6 +465,14 @@ died.
 without new evidence that no write could have occurred. This is the conservative
 direction on purpose, because the alternative — an unnecessary duplicate — is
 unfixable (ADR-021).
+
+**Missing configuration uses `login_failed` for V1.** Absent or empty
+`ANYLIST_EMAIL` / `ANYLIST_PASSWORD` reports `login_failed`, which deliberately
+**collapses deployment misconfiguration and genuine credential failure into one
+`FAILED_SAFE` class**. Safe — neither reached AnyList — but lossy for diagnosis:
+an operator cannot distinguish "the secret is missing in this environment" from
+"the password is wrong". A `config_missing` discriminator may be added if the
+consumer or operations layer needs the distinction. Not required for V1.
 
 ---
 
@@ -553,10 +570,66 @@ strictness buys something real. Making every internal object strict would cause
 churn across the extraction pipeline for no safety gain, and churn during
 parallel waves is itself a risk (ADR-008).
 
-**Consequences.** A known contradiction is created and must be resolved in
-Wave 1: Milestone 1.1 froze "an exact time is never encoded as `min === max`" on
-the producer side, and `buildNote()` in `src/anylist/mapping.ts` treats any
-non-null `maxMinutes` as a range. An inbound `{40, 40}` would therefore render
-as `"40–40 minutes"`. Accepting the shape without fixing the renderer produces
-wrong output. The preferred producer form remains
-`{ minMinutes: n, maxMinutes: null }`.
+**Consequences.** The preferred producer form remains
+`{ minMinutes: n, maxMinutes: null }`; our own extraction continues to emit it.
+
+**QA-020 — resolved.** This ADR originally created a contradiction: accepting
+`maxMinutes === minMinutes` while `buildNote()` in `src/anylist/mapping.ts`
+treated any non-null `maxMinutes` as a range, so an inbound `{40, 40}` would
+render `"40–40 minutes"`. Fixed by commit **`8e921b8`** ("Add typed AnyList
+errors and exact-time mapping"), which renders a range only when
+`maxMinutes > minMinutes`. **That commit currently lives on
+`research/anylist-auth-session` and is not merged to `main`** — the defect is
+still present on `main` until it lands.
+
+**Amended 2026-08-21 (QA-023).** Non-blank validation is **semantic**, not just
+`min(1)`: `title`, `ingredients[].name`, `ingredients[].rawText` where required,
+and each `instructions[]` entry are trimmed and must be non-blank. For
+`quantity`, `unit`, and `preparation` the **nullable model is preserved** —
+`null` remains a meaningful "not stated" — but a non-null whitespace-only value
+is not accepted as meaningful text. The canonical recipe structure is **not**
+redesigned.
+
+---
+
+## ADR-025 — Idempotency retention is state-dependent; TTL is not a lease
+
+**Status:** Accepted (2026-08-21). Supersedes the flat 24-hour retention in
+ADR-017 and completes ADR-012. Raised by QA as **QA-021**.
+
+**Decision.** Retention depends on state:
+
+| State | Record retention |
+|---|---|
+| `COMPLETED` | 24 hours (replay window); ordinary key reuse may follow, per implementation policy |
+| `FAILED_SAFE` | 24 hours; retry via the atomic `FAILED_SAFE → IN_PROGRESS` transition |
+| `IN_PROGRESS` | Not a plain 24-hour TTL; may hold a 30-day record TTL with a much shorter explicit `leaseExpiresAt` |
+| `AMBIGUOUS` | **30 days**; returns `409 Export outcome unknown` throughout |
+
+**Record TTL** and **execution lease** are distinct concepts. TTL preserves the
+record. `leaseExpiresAt` says whether active execution is still expected. A
+stale lease **does not delete the record**; it transitions the record atomically
+to `AMBIGUOUS`, and that conversion must happen **before any new claim** can be
+made against the key.
+
+**Why.** The approved contract contained a genuine contradiction. It said a
+stale `IN_PROGRESS` is not evidence of safety and must be treated as
+`AMBIGUOUS`, and it said records expire after 24 hours. Under a flat TTL those
+two rules collide: the record vanishes, the key reads as `NEW`, and a second
+AnyList write happens **solely because time passed**. Expiry is not evidence.
+The safety rule would have been silently defeated by the retention policy — the
+worst kind of contradiction, because the system would look correct while
+duplicating writes.
+
+**Consequences.** Uncertainty is preserved rather than erased. An operator sees
+`409 Export outcome unknown` for 30 days on an affected key, which is the
+correct outcome: the answer is genuinely unknown, and `deleteRecipe()` cannot
+clean up a duplicate if we guess wrong (ADR-021). Implementations must not use
+record expiry as a liveness signal.
+
+**Honest limit.** After 30 days the `AMBIGUOUS` record is gone and the key
+becomes reusable, so a second write becomes possible again. Thirty days is a
+pragmatic bound on how long we hold uncertainty, not a proof. **Do not claim
+indefinite duplicate prevention.** True exactly-once protection remains
+impossible while AnyList exposes no native idempotency key — this policy narrows
+the window, it does not close it.

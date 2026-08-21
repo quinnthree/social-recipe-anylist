@@ -231,6 +231,17 @@ only** — it is not a general application database and does not reopen the
 "no database" scope decision (ADR-017). Only `POST /api/exports/anylist`
 requires it; `POST /api/imports` is read/compute-only.
 
+Retention is **state-dependent**, not a flat TTL (ADR-025): 24 hours for
+`COMPLETED` and `FAILED_SAFE`, **30 days for `AMBIGUOUS`**, and `IN_PROGRESS`
+persisted with an explicit `leaseExpiresAt` separate from its record TTL. A
+stale lease transitions the record atomically to `AMBIGUOUS`; it never deletes
+it and never returns the key to `NEW`. Record expiry is not a liveness signal
+and must never be used as one.
+
+After 30 days an `AMBIGUOUS` record is gone and the key becomes reusable, so
+duplicate prevention is **bounded, not indefinite**. AnyList exposes no native
+idempotency key, so exactly-once remains impossible; this narrows the window.
+
 ## Known gaps between this document and the code
 
 These are stated so the document does not read as a description of something

@@ -62,8 +62,15 @@ Implements the approved Part 2 contracts:
 - `Idempotency-Key` with the frozen semantics and states (ADR-012).
 
 **Storage is now decided:** Upstash Redis via the Vercel Marketplace, behind an
-`IdempotencyStore` abstraction, 24-hour retention, atomic transitions (ADR-017).
-Required on `POST /api/exports/anylist` only.
+`IdempotencyStore` abstraction, atomic transitions (ADR-017). Required on
+`POST /api/exports/anylist` only.
+
+**Retention is state-dependent (ADR-025, QA-021)** — do not implement a flat
+24-hour TTL, which would let a key return to `NEW` by ageing and permit a second
+write. 24h for `COMPLETED`/`FAILED_SAFE`; **30 days for `AMBIGUOUS`**;
+`IN_PROGRESS` carries an explicit `leaseExpiresAt` distinct from its record TTL,
+and a stale lease transitions atomically to `AMBIGUOUS` **before** any new claim
+can be made.
 
 Also in scope, all newly approved:
 
@@ -74,7 +81,13 @@ Also in scope, all newly approved:
   an oversized body currently returns 500 and a wrong content type returns 400.
 - Body limits: 8 KB for both import routes, 64 KB for export.
 - Minimum usable recipe gate: non-blank title + ≥1 ingredient + ≥1 instruction
-  (ADR-019). Not a confidence threshold.
+  (ADR-019). Not a confidence threshold. Implement at the **shared
+  import-service boundary**, not in the route, so the legacy
+  `POST /api/import` path is covered too (QA-003). Do not remove that route.
+- Semantic non-blank validation at the API boundary (QA-023, ADR-024):
+  trimmed non-blank `title`, ingredient `name`, required `rawText`, and each
+  instruction; nullable `quantity`/`unit`/`preparation` preserved, but not
+  whitespace-only when non-null.
 - Inbound hardening: strict bodies, whitespace-only titles rejected,
   `http:`/`https:` only, `maxMinutes < minMinutes` rejected (ADR-024).
 - `AnyListError.code` and the state mapping in ADR-020.
@@ -86,10 +99,11 @@ threshold (ADR-019); build rollback or Undo on `deleteRecipe()` (ADR-021); store
 application data in Redis (ADR-017); implement YouTube ingestion; change parser
 contracts for telemetry (`inputTokens`/`outputTokens` may stay `null`).
 
-**Known bug to fix while implementing ADR-024:** `buildNote()` in
-`src/anylist/mapping.ts` renders any non-null `maxMinutes` as a range, so an
-inbound `{40, 40}` becomes `"40–40 minutes"`. Accepting that shape without
-fixing the renderer produces wrong output.
+**QA-020 — fixed, pending merge.** `buildNote()` rendering `{40, 40}` as
+`"40–40 minutes"` is resolved by commit **`8e921b8`** on
+`research/anylist-auth-session`. **That branch is not merged to `main`**, so the
+defect is still present on `main`. Merge it before or alongside the ADR-024
+validation work.
 
 **Already corrected (2026-08-21):** the "server-assigned" wording in
 `src/anylist/client.ts` and the affected test descriptions, plus the stale
