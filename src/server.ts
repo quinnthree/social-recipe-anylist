@@ -1,18 +1,27 @@
 import { config } from "dotenv";
 
 import { buildServer } from "./http/server.js";
+import { resolveHost, resolveIdempotencyStore, resolvePort } from "./http/runtime.js";
 
 config({ quiet: true });
 
-const DEFAULT_PORT = 3000;
-// Local only for this milestone. Exposing the API is a deliberate later step.
-const HOST = process.env["HOST"] ?? "127.0.0.1";
-const PORT = Number(process.env["PORT"] ?? DEFAULT_PORT);
-
+/**
+ * The HTTP entrypoint, for `npm run server` locally and for Vercel.
+ *
+ * `listen()` is called at module load and is not guarded behind an argv check:
+ * Vercel detects the HTTP server from that call, and a guard would make
+ * detection depend on how the file happened to be invoked. Everything that
+ * benefits from being tested lives in `./http/runtime.js`, which can be
+ * imported without opening a port.
+ */
 async function main(): Promise<void> {
-  const server = buildServer({ apiKey: process.env["RECIPE_API_KEY"], logger: true });
+  const server = buildServer({
+    apiKey: process.env["RECIPE_API_KEY"],
+    idempotencyStore: resolveIdempotencyStore(process.env),
+    logger: true,
+  });
 
-  await server.listen({ host: HOST, port: PORT });
+  await server.listen({ host: resolveHost(process.env), port: resolvePort(process.env) });
 }
 
 main().catch((error: unknown) => {

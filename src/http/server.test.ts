@@ -129,7 +129,7 @@ describe("POST /api/import — success", () => {
     const { app, importRecipe } = server();
     await post(app, { auth: `Bearer ${API_KEY}` });
 
-    expect(importRecipe).toHaveBeenCalledWith(URL);
+    expect(importRecipe).toHaveBeenCalledWith(URL, expect.any(Object));
   });
 });
 

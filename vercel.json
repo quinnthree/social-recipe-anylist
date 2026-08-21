@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "fastify",
+  "regions": ["iad1"],
+  "functions": {
+    "src/app.ts": {
+      "maxDuration": 120,
+      "includeFiles": "node_modules/@anylist-napi/**"
+    },
+    "src/server.ts": {
+      "maxDuration": 120,
+      "includeFiles": "node_modules/@anylist-napi/**"
+    }
+  }
+}

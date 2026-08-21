@@ -1,6 +1,8 @@
 node_modules/
 .env
+.env*.local
 dist/
 .DS_Store
 coverage/
 .anylist_credentials
+.vercel/

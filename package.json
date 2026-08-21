@@ -15,9 +15,13 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "engines": {
+    "node": "22.x"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
-    "@anylist-napi/anylist-napi": "^1.1.1",
+    "@anylist-napi/anylist-napi": "1.1.1",
+    "@upstash/redis": "^1.38.2",
     "dotenv": "^17.4.2",
     "fastify": "^5.12.1",
     "pino": "^10.3.1",
