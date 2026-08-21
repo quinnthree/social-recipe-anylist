@@ -1,29 +1,101 @@
 # Handoff — Wave Plan
 
-Status: proposed. Wave 1 is **not** started and must not begin until this and
-the Part 2 contracts are approved.
+Status: **Milestone 4 backend implementation complete; integration QA complete.**
+Next step is a private Vercel smoke test.
 
 Last updated: 2026-08-21.
 
 ## Where things stand
 
-Milestones 1–3 are complete and live-tested: TikTok → extraction → canonical
-Recipe → AnyList save → server-side verification → visible in the AnyList mobile
-app, reachable from both the CLI and a local HTTP API. 144 tests pass;
-typecheck is clean.
+### Integration state
 
-What does **not** exist: YouTube ingestion, the extraction/export split, any
-persistence, idempotency, request IDs, `schemaVersion`, deployment, and the iOS
-app.
+`065d9c6` — "Align QA suite with production backend", branch `integration/m4`.
 
-The Wave 0 contract revision is complete: idempotency semantics, schema
-versioning, source provenance, auth scope, and the canonical platform value set
-are all frozen. See ADR-010 through ADR-016.
+- **1079 tests passing**, 0 failing
+- **28 intentionally skipped** live-external tests
+- typecheck clean, working tree clean, `origin/integration/m4` up to date
 
-**Milestone 4 amendment (2026-08-21).** Backend planning, AnyList production
-research, and independent QA are complete, and their findings are folded into
-the contracts. See ADR-017 through ADR-024, and the RESEARCH-PROVEN section of
-`architecture.md`.
+Independent QA recommendation: **READY FOR PRIVATE VERCEL SMOKE TEST.**
+
+### What is built
+
+Milestones 1–3 (extraction → canonical Recipe → verified AnyList save, CLI and
+local API) plus the Milestone 4 production API: the `POST /api/imports` /
+`POST /api/exports/anylist` split, durable idempotency with state-dependent
+retention, request IDs, `schemaVersion`, the 409/413/415 error contract, the
+minimum-usability gate at the shared service boundary, semantic inbound
+validation, typed AnyList errors, and Instagram redirect/interstitial hardening.
+
+### What is not done
+
+- **Live deployment verification.** Nothing has run against a deployed Vercel
+  environment or a live Upstash instance. Implemented and tested is not verified
+  in production.
+- **Redis conformance is live-gated.** The `IdempotencyStore` conformance suite
+  passes against the in-memory implementation; the Upstash implementation is
+  exercised only by the skipped live-external tests. Atomicity under real
+  concurrency is unproven until the smoke test.
+- **YouTube ingestion**, and the **iOS app**.
+
+### Blocking broad consumer release
+
+**Native AnyList stderr leakage (ADR-023) remains unresolved and is the release
+blocker.** On failed login the native library writes response metadata —
+including `set-cookie` values — directly to stderr, ahead of any JavaScript
+redaction. On a deployed host that reaches platform logs. Private smoke testing
+with known-good credentials is acceptable; broad distribution is not, until this
+is mitigated.
+
+Consumer authentication (ADR-014) also remains an open contract decision — the
+static `RECIPE_API_KEY` must not ship in an App Store binary.
+
+## Next step: private Vercel smoke test
+
+Deploy to a **private** Vercel environment and exercise the production routes
+end to end against a real Upstash instance and a real AnyList account.
+
+Reminders from the frozen policy:
+
+- Do **not** configure production `ANYLIST_EMAIL` / `ANYLIST_PASSWORD` in Vercel
+  **Preview** environments. Preview may exercise extraction paths only; live
+  AnyList export verification is Production or manual.
+- Watch platform logs for native stderr output on any failed-login path
+  (ADR-023). That observation is part of the smoke test, not a side note.
+- Record `elapsedMs` and the phase split. These are the inputs to the
+  deployment-timeout decision, and this is the first chance to measure them
+  outside localhost.
+- Redis conformance under real concurrency is unproven until this run. The
+  atomic `NEW → IN_PROGRESS` claim and the stale-lease → `AMBIGUOUS` transition
+  are the two behaviours worth deliberately provoking.
+
+## Open QA follow-ups
+
+### QA-025 — non-blocking
+
+The minimum-usability gate (`isUsableRecipe`) trims the **title**, but counts
+`ingredients` and `instructions` **structurally**:
+
+```ts
+recipe.title.trim().length > 0 &&
+recipe.ingredients.length > 0 &&
+recipe.instructions.length > 0
+```
+
+An entry that exists but is whitespace-only therefore still satisfies the gate —
+`instructions: ["   "]` passes. The canonical schema's `min(1)` admits such
+strings, so extraction output can reach the gate in that shape.
+
+Non-blocking: semantic non-blank validation (QA-023, ADR-024) already rejects
+these at the **consumer API inbound** boundary, so the exposure is extraction
+output, not client input, and it is a quality gap rather than a safety one. Fix
+by trimming entries before counting them.
+
+### Redis conformance is live-gated
+
+The `IdempotencyStore` conformance suite passes against the in-memory
+implementation. The Upstash implementation is covered only by the 28 skipped
+live-external tests. **Conformance is not proven for the store we will actually
+deploy** until those run against a live instance during the smoke test.
 
 ## Rules for all parallel agents
 

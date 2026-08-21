@@ -211,10 +211,12 @@ ingredient, and at least one instruction. Deterministic and structural — not a
 confidence threshold (ADR-019). Anything less returns the existing safe
 extraction-failure result.
 
-## Instagram public-endpoint hardening (required before public exposure)
+## Instagram public-endpoint hardening — IMPLEMENTED
 
-Not implemented; not part of this documentation task. Belongs in the **Instagram
-adapter**, not the HTTP layer:
+**Implemented in Milestone 4**, in the Instagram adapter as specified — not in
+the HTTP layer. Redirects are followed by hand with each destination
+re-validated, and interstitial detection runs *before* any text is read as
+caption. The requirements were:
 
 - Do not blindly follow redirects. Validate **each** destination against the
   accepted Instagram host policy.
@@ -241,6 +243,17 @@ and must never be used as one.
 After 30 days an `AMBIGUOUS` record is gone and the key becomes reusable, so
 duplicate prevention is **bounded, not indefinite**. AnyList exposes no native
 idempotency key, so exactly-once remains impossible; this narrows the window.
+
+## Milestone 4 status
+
+The production API described above is **implemented** (integration `065d9c6`,
+`integration/m4`): 1079 tests passing, 28 live-external tests intentionally
+skipped, typecheck clean.
+
+**Live deployment verification is outstanding.** Nothing has run against a
+deployed Vercel environment or a live Upstash instance, so Redis conformance
+under real concurrency is unproven. The native stderr risk (ADR-023) remains
+unresolved and blocks broad consumer release.
 
 ## Known gaps between this document and the code
 

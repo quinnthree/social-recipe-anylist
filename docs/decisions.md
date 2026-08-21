@@ -125,7 +125,7 @@ model, opinionated product.
 
 ## ADR-007 — Extraction and export are separate production concepts
 
-**Status:** Accepted (contract proposed, not implemented)
+**Status:** Accepted. **Implemented** in Milestone 4 (`065d9c6`); live deployment verification outstanding.
 
 **Decision.** In the production API, extraction (`POST /api/imports`) and export
 (`POST /api/exports/anylist`) are distinct operations with the user's Review/Edit
@@ -217,7 +217,7 @@ remains a possible future change, deliberately deferred.
 
 ## ADR-011 — The production API is versioned and strictly validated
 
-**Status:** Accepted (proposed contract, not implemented)
+**Status:** Accepted. **Implemented** in Milestone 4 (`065d9c6`); live deployment verification outstanding.
 
 **Decision.** Production requests and successful responses carry
 `schemaVersion: 1`. Inbound validation is strict: unknown keys are rejected,
@@ -237,7 +237,7 @@ is unversioned and stays that way as internal/proof convenience.
 
 ## ADR-012 — Idempotency requires durable shared state, and is not exactly-once
 
-**Status:** Accepted (semantics frozen; storage not chosen)
+**Status:** Accepted. Storage chosen (ADR-017) and **implemented** in Milestone 4 (`065d9c6`). Redis conformance remains live-gated.
 
 **Decision.** `Idempotency-Key` is part of the production contract with the
 semantics and the `NEW` / `IN_PROGRESS` / `COMPLETED` / `FAILED_SAFE` /
@@ -311,7 +311,7 @@ for development, but the iOS contract must not harden around it.
 
 ## ADR-015 — YouTube is canonically supported before it is ingestible
 
-**Status:** Accepted (canonical value set updated; source change proposed, not applied)
+**Status:** Accepted. Canonical value set updated and the source change **applied**. YouTube ingestion remains unimplemented by design.
 
 **Decision.** The canonical platform value set is
 `"tiktok" | "instagram" | "youtube"`. YouTube ingestion is **not** implemented
@@ -365,7 +365,7 @@ corrected in `contracts.md`.
 
 ## ADR-017 — Upstash Redis behind an IdempotencyStore abstraction
 
-**Status:** Accepted (2026-08-21). Completes the open question in ADR-012.
+**Status:** Accepted (2026-08-21). Completes the open question in ADR-012. **Implemented** in Milestone 4; Redis conformance live-gated.
 
 **Decision.** Export idempotency uses **Upstash Redis via the Vercel
 Marketplace**, behind an `IdempotencyStore` abstraction. The store must support
@@ -390,7 +390,7 @@ change.
 
 ## ADR-018 — Idempotency compares a normalised fingerprint, not raw bytes
 
-**Status:** Accepted (2026-08-21)
+**Status:** Accepted (2026-08-21). **Implemented** in Milestone 4 (`065d9c6`).
 
 **Decision.** "Same request" is decided by validating the request, normalising
 it to the accepted canonical shape, deterministically serialising it, and
@@ -412,7 +412,7 @@ invalidates every stored fingerprint.
 
 ## ADR-019 — The acceptance gate is a deterministic minimum, not a confidence threshold
 
-**Status:** Accepted (2026-08-21). Amends ADR-009.
+**Status:** Accepted (2026-08-21). Amends ADR-009. **Implemented** in Milestone 4 at the shared import-service boundary (QA-003). See QA-025 in `handoff.md` for a known non-blocking gap.
 
 **Decision.** `POST /api/imports` succeeds only when extraction yields a
 **non-blank title, at least one ingredient, and at least one instruction**.
@@ -445,7 +445,7 @@ that actually writes. `importRecipe()` is that shared boundary.
 
 ## ADR-020 — AnyList reports facts; the application decides retry safety
 
-**Status:** Accepted (2026-08-21)
+**Status:** Accepted (2026-08-21). **Implemented** in Milestone 4 as typed AnyList errors.
 
 **Decision.** `AnyListError` carries a `code` of `login_failed`,
 `create_failed`, `verify_unreadable`, or `verify_missing`. The AnyList layer
@@ -534,7 +534,8 @@ credential risk** in any document or commit message.
 
 ## ADR-023 — Pino redaction is not protection against native stderr
 
-**Status:** Accepted (2026-08-21). RESEARCH-PROVEN.
+**Status:** Accepted (2026-08-21). RESEARCH-PROVEN. **Unresolved — this is the
+blocker for broad consumer release.**
 
 **Decision.** Record that on failed login the native Rust library writes
 diagnostic data — including HTTP response metadata with `set-cookie` values —
@@ -557,7 +558,7 @@ JavaScript-side interception of native output at all.
 
 ## ADR-024 — Strict validation at the untrusted boundary, not everywhere
 
-**Status:** Accepted (2026-08-21)
+**Status:** Accepted (2026-08-21). **Implemented** in Milestone 4. QA-020 resolved and merged.
 
 **Decision.** Consumer-facing API request bodies are strict: unknown keys are
 rejected. Inbound hardening also rejects whitespace-only titles, restricts
@@ -594,7 +595,7 @@ redesigned.
 
 ## ADR-025 — Idempotency retention is state-dependent; TTL is not a lease
 
-**Status:** Accepted (2026-08-21). Supersedes the flat 24-hour retention in
+**Status:** Accepted (2026-08-21), **implemented** in Milestone 4. Supersedes the flat 24-hour retention in
 ADR-017 and completes ADR-012. Raised by QA as **QA-021**.
 
 **Decision.** Retention depends on state:

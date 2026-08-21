@@ -2,10 +2,10 @@
 
 This document has two parts.
 
-- **Part 1 — CURRENT** describes what is implemented and running today.
-- **Part 2 — PROPOSED** describes approved production contracts that are **not
-  yet built**. Do not build against Part 2 as though it exists; do build it as
-  specified.
+- **Part 1 — CURRENT** describes the original proof endpoint and CLI.
+- **Part 2 — IMPLEMENTED** describes the production API. As of Milestone 4 it is
+  **built, tested, and merged** — it is no longer a proposal. What remains
+  outstanding is **live deployment verification**, not implementation.
 - **RESEARCH-PROVEN** marks measured findings from the AnyList and QA
   workstreams. These are observations about the world, not statements about our
   code. They appear inline where relevant and in full in `architecture.md`.
@@ -149,31 +149,45 @@ missing or empty.
 `OPENAI_API_KEY` and `APIFY_API_TOKEN` exist in `.env.example` from the original
 scaffold and are unused.
 
-## Current limits
+## Limits of the legacy `POST /api/import` path
+
+These describe the Milestone 3 one-shot endpoint and the CLI. They are **not**
+limits of the production API in Part 2, which addresses most of them.
 
 - **Synchronous.** A request runs source fetch + Claude call + AnyList
-  save-and-verify. Tens of seconds is normal.
-- **No idempotency.** A client retry after a timeout can create a duplicate
-  recipe in AnyList.
-- **No persistence.** No database, queue, job IDs, or server-side recipe identity.
-- **No request IDs are returned.** Fastify assigns an internal `reqId` for logs
-  only; it is not exposed in any response, and no `X-Request-Id` header is set.
-- **`413` and `415` are not produced.** Verified against the running server: an
-  oversized body returns `500 Recipe import failed`, and a `text/plain` body
-  returns `400 Invalid request body`. The error handler maps every non-400
-  status to 500. Part 2 requires distinct codes.
-- **Native stderr is not covered by redaction.** RESEARCH-PROVEN: on failed
-  AnyList login the native library writes response metadata — including
-  `set-cookie` values — straight to stderr, before any JavaScript logging can
-  intercept it. Pino redaction governs our logs, not a native library's file
-  descriptor.
+  save-and-verify. Tens of seconds is normal. **Still true everywhere** — the
+  production API is synchronous by design (ADR: no queues in V1).
+- **No idempotency on this route.** A client retry after a timeout can create a
+  duplicate recipe in AnyList. `POST /api/exports/anylist` has durable
+  idempotency; this legacy route does not.
+- **No `requestId` in this route's JSON body.** Its envelope is frozen as
+  Part 1 documents it. The `X-Request-Id` **header is still sent** — the hook
+  that sets it covers every response with no exceptions — which is additive and
+  cannot break a client that does not read it.
+- **Covered by the usability gate.** As of Milestone 4 this route goes through
+  the shared `importRecipe()` boundary, so it no longer writes obviously empty
+  recipes (QA-003, ADR-019).
+- **Native stderr is not covered by redaction.** RESEARCH-PROVEN and **still
+  unresolved**: on failed AnyList login the native library writes response
+  metadata — including `set-cookie` values — straight to stderr, before any
+  JavaScript logging can intercept it. Pino redaction governs our logs, not a
+  native library's file descriptor. This applies to **every** route and blocks
+  broad consumer release.
 
 ---
 
-# Part 2 — PROPOSED (not implemented)
+# Part 2 — IMPLEMENTED (production API)
 
-Everything below is a proposal. It is not built. It requires approval before any
-agent implements against it.
+**Status: implemented as of Milestone 4** (integration `065d9c6`, branch
+`integration/m4`): 1079 tests passing, 28 live-external tests intentionally
+skipped, typecheck clean.
+
+**Still outstanding: live deployment verification.** Nothing below has been
+exercised against a deployed Vercel environment or a live Upstash instance. The
+private Vercel smoke test is the next step. Implemented and tested is not the
+same as verified in production — in particular, Redis conformance is live-gated
+(see `handoff.md`) and the 28 skipped tests are exactly the ones that would
+exercise external systems.
 
 ## Why split
 
@@ -275,7 +289,7 @@ Every production request and successful response carries `schemaVersion: 1`.
 This exists because the canonical Recipe becomes an *inbound* contract for the
 first time (ADR-007). Version 1 is the shape documented in Part 1.
 
-## Idempotency-Key — PROPOSED
+## Idempotency-Key — IMPLEMENTED
 
 **Required** on `POST /api/exports/anylist`. **Not required** on
 `POST /api/imports`, which is read/compute-only and performs no external write.
@@ -372,7 +386,7 @@ pragmatic bound on how long we hold uncertainty, not a proof of anything.
 remains impossible while AnyList exposes no native idempotency key — the
 retention policy narrows the window, it does not close it.
 
-## Request fingerprint — PROPOSED
+## Request fingerprint — IMPLEMENTED
 
 "Same request" is decided by fingerprint, never by raw HTTP bytes.
 
@@ -387,7 +401,7 @@ whitespace, must **not** produce `409 Idempotency key conflict`. Comparing raw
 bytes would make a conflict out of a re-serialisation, which is a false alarm
 the client cannot fix.
 
-## Request IDs — PROPOSED
+## Request IDs — IMPLEMENTED
 
 **Every** response carries a request ID — `200`, `400`, `401`, `404`, `409`,
 `413`, `415`, `422`, and `500` alike, with no exceptions.
@@ -413,7 +427,8 @@ a `COMPLETED` record. It is absent on a first execution.
 Without both, a replay is indistinguishable from a fresh success in logs, which
 makes duplicate investigation guesswork.
 
-**CURRENT:** no request ID is exposed in any response today.
+**Implemented.** Every response carries `X-Request-Id`, and `originalRequestId`
+appears on replays. This was a Milestone 3 gap and is now closed.
 
 ## Error envelope
 
@@ -428,7 +443,7 @@ selected by failure kind. Underlying messages, stacks, provider errors,
 credentials, tokens, and request internals are never returned. Classification is
 by error **code**, never by matching message text.
 
-## HTTP error contract — PROPOSED
+## HTTP error contract — IMPLEMENTED
 
 Envelope is unchanged in shape; `requestId` is always present.
 
@@ -457,7 +472,7 @@ Envelope is unchanged in shape; `requestId` is always present.
 **CURRENT gap:** 413 and 415 are not produced today — an oversized body returns
 500 and a wrong content type returns 400. Verified against the running server.
 
-### Body limits — PROPOSED
+### Body limits — IMPLEMENTED
 
 | Route | Limit |
 |---|---|
@@ -467,7 +482,7 @@ Envelope is unchanged in shape; `requestId` is always present.
 
 Exports carry a full canonical Recipe, hence the larger allowance.
 
-## Minimum usable recipe — PROPOSED
+## Minimum usable recipe — IMPLEMENTED
 
 `POST /api/imports` succeeds only when the extracted recipe has **all** of:
 
@@ -499,7 +514,7 @@ extraction, held to a weaker standard, on the path that actually writes.
 `POST /api/import` is **not removed**. It keeps its role for CLI and internal
 use; it just stops being exempt from the minimum.
 
-## Canonical input hardening — PROPOSED
+## Canonical input hardening — IMPLEMENTED
 
 Applies to **untrusted inbound API data**. That is the security boundary; it is
 deliberately not a mandate to make every internal Zod object strict, which would
@@ -617,7 +632,7 @@ backend is required for V1.
 decision. They are **no longer** described as inputs to a confidence gate — see
 ADR-019.
 
-## AnyList error classification — PROPOSED
+## AnyList error classification — IMPLEMENTED
 
 `AnyListError` gains a `code`:
 
