@@ -356,27 +356,146 @@ describe.skip("POST /api/exports/anylist — specification (contracts.md Part 2 
     });
   });
 
-  describe("Idempotency-Key", () => {
-    it("succeeds without one, because the contract only recommends it", async () => {
+  describe("Idempotency-Key is required", () => {
+    // ADR-017: required on this route, 1–128 characters. The earlier draft only
+    // recommended it and allowed 255 (QA-015).
+    const headersWith = (key: string) => ({ ...AUTH, "idempotency-key": key });
+
+    it("rejects a request with no Idempotency-Key", async () => {
       const { app } = server();
-      const response = await app.inject({ method: "POST", url: "/api/exports/anylist", headers: AUTH, payload: validBody });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers: AUTH,
+        payload: validBody,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toBe("Invalid idempotency key");
+    });
+
+    it("rejects an empty Idempotency-Key", async () => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers: headersWith(""),
+        payload: validBody,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toBe("Invalid idempotency key");
+    });
+
+    it("rejects an Idempotency-Key longer than 128 characters", async () => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers: headersWith("x".repeat(129)),
+        payload: validBody,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toBe("Invalid idempotency key");
+    });
+
+    it("accepts a key at the 128-character boundary", async () => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers: headersWith("x".repeat(128)),
+        payload: validBody,
+      });
 
       expect(response.statusCode).toBe(200);
     });
 
-    it("replays the original response for the same key and body, with no second write", async () => {
+    it("never writes to AnyList when the key is invalid", async () => {
+      // The key is validated before anything is claimed or executed.
       const { app } = server();
-      const headers = { ...AUTH, "idempotency-key": "export-key-1" };
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers: AUTH,
+        payload: validBody,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.body).not.toContain("saved");
+    });
+  });
+
+  describe("idempotent replay", () => {
+    const headers = { ...AUTH, "idempotency-key": "export-key-1" };
+
+    it("reports idempotent false on the first execution", async () => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers,
+        payload: validBody,
+      });
+
+      expect(response.json().idempotent).toBe(false);
+    });
+
+    it("replays the recorded result without a second AnyList write", async () => {
+      const { app } = server();
 
       const first = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
       const second = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
 
-      expect(first.json().idempotent).toBe(false);
+      expect(second.statusCode).toBe(200);
       expect(second.json().idempotent).toBe(true);
       expect(second.json().saved.id).toBe(first.json().saved.id);
     });
 
-    it("conflicts for the same key with a different body", async () => {
+    it("omits originalRequestId on a first execution", async () => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers,
+        payload: validBody,
+      });
+
+      expect(response.json().originalRequestId).toBeUndefined();
+    });
+
+    it("carries both request ids on a replay, and they differ", async () => {
+      // Without both, a replay is indistinguishable from a fresh success in
+      // logs, which makes duplicate investigation guesswork.
+      const { app } = server();
+
+      const first = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+      const second = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+
+      expect(second.json().originalRequestId).toBe(first.json().requestId);
+      expect(second.json().requestId).not.toBe(second.json().originalRequestId);
+    });
+
+    it("does not treat a re-serialised identical recipe as a different request", async () => {
+      // ADR-018: the fingerprint is over the validated, normalised value, so
+      // key ordering must not produce a false 409.
+      const reordered = {
+        recipe: Object.fromEntries(Object.entries(recipe).reverse()),
+        schemaVersion: 1,
+      };
+      const { app } = server();
+
+      await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+      const replay = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: reordered });
+
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json().idempotent).toBe(true);
+    });
+  });
+
+  describe("idempotency conflicts, all 409", () => {
+    it("returns 409 Idempotency key conflict for the same key with a different recipe", async () => {
       const { app } = server();
       const headers = { ...AUTH, "idempotency-key": "export-key-2" };
 
@@ -392,33 +511,212 @@ describe.skip("POST /api/exports/anylist — specification (contracts.md Part 2 
       expect(conflict.json().error).toBe("Idempotency key conflict");
     });
 
-    it("lets at most one of two concurrent same-key requests write", async () => {
+    it("returns 409 Export already in progress while the first export runs", async () => {
+      // Requires the injected saver to block. Exactly one of the two may reach
+      // createRecipe; the other must be refused, never queued behind it.
       const { app } = server();
       const headers = { ...AUTH, "idempotency-key": "export-key-3" };
 
-      const responses = await Promise.all([
+      const [a, b] = await Promise.all([
         app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody }),
         app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody }),
       ]);
 
-      // Exactly one may have performed the export. The other must not have
-      // called createRecipe, whatever it returned.
-      expect(responses.filter((r) => r.json().idempotent === false).length).toBeLessThanOrEqual(1);
+      const statuses = [a.statusCode, b.statusCode].sort();
+      expect(statuses).toEqual([200, 409]);
+
+      const refused = a.statusCode === 409 ? a : b;
+      expect(refused.json().error).toBe("Export already in progress");
+    });
+
+    it("returns 409 Export outcome unknown after an ambiguous write", async () => {
+      // Wire the injected saver to fail with an AMBIGUOUS-mapped AnyList code
+      // (create_failed, verify_unreadable, or verify_missing), then retry.
+      const { app } = server();
+      const headers = { ...AUTH, "idempotency-key": "export-key-4" };
+
+      await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+      const retry = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+
+      expect(retry.statusCode).toBe(409);
+      expect(retry.json().error).toBe("Export outcome unknown");
+    });
+
+    it("never calls createRecipe again for an ambiguous key", async () => {
+      // The rule the whole state machine exists for (ADR-012, ADR-020). An
+      // unnecessary duplicate cannot be cleaned up: deleteRecipe reports
+      // success without deleting (ADR-021).
+      const { app } = server();
+      const headers = { ...AUTH, "idempotency-key": "export-key-5" };
+
+      await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+      const retry = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+
+      expect(retry.statusCode).toBe(409);
+    });
+
+    it("retries after a login failure, which is the one safe case", async () => {
+      // login_failed → FAILED_SAFE → atomic re-claim → retry (ADR-020).
+      const { app } = server();
+      const headers = { ...AUTH, "idempotency-key": "export-key-6" };
+
+      const failed = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+      expect(failed.statusCode).toBe(500);
+
+      const retry = await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+      expect(retry.statusCode).toBe(200);
+      expect(retry.json().idempotent).toBe(false);
+    });
+
+    it("carries a requestId on every 409", async () => {
+      const { app } = server();
+      const headers = { ...AUTH, "idempotency-key": "export-key-7" };
+
+      await app.inject({ method: "POST", url: "/api/exports/anylist", headers, payload: validBody });
+      const conflict = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers,
+        payload: { schemaVersion: 1, recipe: editedRecipe },
+      });
+
+      expect(conflict.headers["x-request-id"]).toBe(conflict.json().requestId);
+    });
+  });
+
+  describe("inbound hardening (ADR-024)", () => {
+    const headers = { ...AUTH, "idempotency-key": "hardening-key" };
+    const post = (recipeBody: unknown) =>
+      server().app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers,
+        payload: { schemaVersion: 1, recipe: recipeBody },
+      });
+
+    it("rejects a whitespace-only title", async () => {
+      const response = await post({ ...recipe, title: "   " });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toBe("Invalid recipe");
+    });
+
+    it.each(["file:///etc/passwd", "javascript:alert(1)", "data:text/plain,x", "ftp://h/x"])(
+      "rejects a source.url of %s",
+      async (url) => {
+        const response = await post({ ...recipe, source: { ...recipe.source, url } });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().error).toBe("Invalid recipe");
+      },
+    );
+
+    it.each(["https://www.tiktok.com/@a/video/1", "http://www.tiktok.com/@a/video/1"])(
+      "accepts a source.url of %s",
+      async (url) => {
+        expect((await post({ ...recipe, source: { ...recipe.source, url } })).statusCode).toBe(200);
+      },
+    );
+
+    it("rejects maxMinutes below minMinutes", async () => {
+      const response = await post({ ...recipe, cookTime: { minMinutes: 40, maxMinutes: 35 } });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toBe("Invalid recipe");
+    });
+
+    it("accepts maxMinutes equal to minMinutes", async () => {
+      // Legal inbound by ADR-024 even though our extraction never emits it.
+      // See QA-020: the AnyList note renders this shape as "40–40 minutes"
+      // until describeTime is corrected.
+      expect(
+        (await post({ ...recipe, cookTime: { minMinutes: 40, maxMinutes: 40 } })).statusCode,
+      ).toBe(200);
+    });
+
+    it("does not render an accepted { n, n } cook time as a range", async () => {
+      // The consumer-visible half of QA-020. This is the assertion that fails
+      // until src/anylist/mapping.ts is fixed.
+      const response = await post({ ...recipe, cookTime: { minMinutes: 40, maxMinutes: 40 } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain("40–40");
+    });
+  });
+
+  describe("body limit and content type", () => {
+    const headers = { ...AUTH, "idempotency-key": "limits-key" };
+
+    it("allows a recipe body up to 64 KB", async () => {
+      // Exports carry a full canonical Recipe, hence the larger allowance.
+      const large = {
+        ...recipe,
+        instructions: [recipe.instructions[0] ?? "Blend.", "x".repeat(40_000)],
+      };
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers,
+        payload: { schemaVersion: 1, recipe: large },
+      });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("returns 413 Request body too large above 64 KB", async () => {
+      const huge = { ...recipe, instructions: ["x".repeat(70_000)] };
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers,
+        payload: { schemaVersion: 1, recipe: huge },
+      });
+
+      expect(response.statusCode).toBe(413);
+      expect(response.json().error).toBe("Request body too large");
+    });
+
+    it("returns 415 Unsupported content type for a non-JSON body", async () => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/exports/anylist",
+        headers: { ...headers, "content-type": "application/xml" },
+        payload: "<recipe/>",
+      });
+
+      expect(response.statusCode).toBe(415);
+      expect(response.json().error).toBe("Unsupported content type");
     });
   });
 });
 
 describe("CONTRACT GAPS for POST /api/exports/anylist", () => {
-  it.each(["QA-011", "QA-014", "QA-015", "QA-017", "QA-018"])(
-    "%s is recorded as unresolved, not assumed",
+  it.each(["QA-011", "QA-014", "QA-015", "QA-017"])(
+    "%s was resolved by the approved contract",
     (id) => {
-      expect(gap(id).blocks.length).toBeGreaterThan(0);
+      expect(gap(id).resolved).toBe(true);
+      expect(gap(id).resolution).toBeTruthy();
     },
   );
 
-  it("leaves the IN_PROGRESS and AMBIGUOUS replay responses unspecified", () => {
-    // Which is why no test above asserts them. Two of the five idempotency
-    // states have no defined response, so a client cannot handle them.
-    expect(gap("QA-011").severity).toBe("blocks-ios-client");
+  it("QA-021 remains open: retention versus the stale-IN_PROGRESS rule", () => {
+    // Within 24 hours a stale IN_PROGRESS becomes AMBIGUOUS and is never
+    // re-claimed. At the TTL boundary the record is deleted, so the same key
+    // and the same fingerprint become claimable again and a retry writes a
+    // second time. No spec above asserts past-24-hour behaviour.
+    expect(gap("QA-021").resolved).toBe(false);
+  });
+
+  it("QA-018 remains open: no response field reflects what AnyList stored", () => {
+    // saved.name is the submitted title and saved.id is client-generated
+    // (ADR-021), so read-back proves existence and nothing more.
+    expect(gap("QA-018").severity).toBe("documentation");
+  });
+
+  it("QA-023 remains open: only title is hardened against whitespace", () => {
+    expect(gap("QA-023").resolved).toBe(false);
   });
 });

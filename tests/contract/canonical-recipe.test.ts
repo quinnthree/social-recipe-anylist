@@ -14,12 +14,16 @@ import {
  * The canonical Recipe contract, tested independently of the pipeline that
  * produces it.
  *
- * Today the canonical Recipe is only ever a server *output*. ADR-007 makes it
- * an *inbound* contract at POST /api/exports/anylist. Several tests below are
- * marked "INBOUND GAP": they assert what the schema does today, which is safe
- * while we are the only producer and is not safe once a client can submit one.
- * Each names an entry in docs/qa/findings.md. None of them is a defect in the
- * current shipped behaviour.
+ * ADR-024 settled the scope question these tests used to raise. `RecipeSchema`
+ * is a producer schema — it also validates model output — and is deliberately
+ * NOT globally strict. The hardening applies to untrusted inbound consumer-API
+ * data only, and lives in a separate schema at the endpoint.
+ *
+ * So the "PRODUCER SCHEMA" tests below are no longer gaps. They record what the
+ * canonical schema deliberately permits, paired with the inbound suite in
+ * tests/contract/inbound-hardening.ts that rejects the same values at the
+ * boundary. Read the two together: each permissive test here has a rejecting
+ * counterpart there.
  */
 
 const VALID = {
@@ -177,14 +181,18 @@ describe("TimeRange semantics", () => {
     expect(TimeRangeSchema.safeParse({ minMinutes: 40 }).success).toBe(false);
   });
 
-  it("INBOUND GAP: accepts minMinutes === maxMinutes, which the contract forbids — QA-004", () => {
-    // "An exact time is never encoded as min === max" is enforced only by the
-    // extraction prompt. The schema does not express it, so a client-supplied
-    // recipe could carry {35, 35} and validate.
+  it("accepts minMinutes === maxMinutes, which ADR-024 makes legal inbound", () => {
+    // "An exact time is never encoded as min === max" remains the PRODUCER
+    // rule, enforced by the extraction prompt. ADR-024 accepts the shape on the
+    // consumer side, so the schema permitting it is now correct rather than a
+    // gap — see tests/contract/inbound-hardening.test.ts for the rendering
+    // defect that acceptance exposes (QA-020).
     expect(TimeRangeSchema.safeParse({ minMinutes: 35, maxMinutes: 35 }).success).toBe(true);
   });
 
-  it("INBOUND GAP: accepts an upper bound below the lower bound — QA-004", () => {
+  it("PRODUCER SCHEMA: accepts an upper bound below the lower bound — rejected inbound", () => {
+    // Nothing we produce can generate this. The inbound schema rejects it
+    // (ADR-024 C); this one is not required to.
     expect(TimeRangeSchema.safeParse({ minMinutes: 40, maxMinutes: 35 }).success).toBe(true);
   });
 });
@@ -249,31 +257,34 @@ describe("the social layer implements a subset of the canonical vocabulary", () 
   });
 });
 
-describe("INBOUND GAPS — safe today, load-bearing once a client can submit a Recipe", () => {
-  it("strips unknown keys instead of rejecting them — QA-006", () => {
-    // ADR-011 requires strict inbound validation: "Unknown keys are rejected,
-    // not ignored." RecipeSchema is not .strict(), so a client field would be
-    // silently dropped and the client would never learn the server ignored it.
-    // The fix belongs at the endpoint, not in this shared schema.
+describe("PRODUCER SCHEMA — deliberately permissive, hardened at the boundary", () => {
+  it("strips unknown keys instead of rejecting them, by design — QA-006", () => {
+    // ADR-024: strictness belongs at the untrusted boundary, not everywhere.
+    // Making this schema strict would churn the extraction pipeline for no
+    // safety gain. The inbound schema rejects unknown keys; this one strips
+    // them, which is harmless for model output.
     const parsed = RecipeSchema.safeParse({ ...VALID, clientOnlyField: "kept?" });
 
     expect(parsed.success).toBe(true);
     expect(parsed.success && "clientOnlyField" in parsed.data).toBe(false);
   });
 
-  it("accepts a whitespace-only title — QA-007", () => {
-    // z.string().min(1) counts characters, not content. A recipe titled " "
-    // would be exported to AnyList under that name.
+  it("accepts a whitespace-only title; the inbound schema rejects it — QA-007", () => {
+    // z.string().min(1) counts characters, not content. ADR-024 A hardens this
+    // at the boundary. Note it hardens `title` only: `name`, `rawText`,
+    // `quantity`, `unit`, `preparation`, and instruction steps all share the
+    // weakness and are not covered (QA-023).
     expect(accepts({ ...VALID, title: "   " })).toBe(true);
+    expect(accepts({ ...VALID, ingredients: [{ ...VALID.ingredients[0], name: "   " }] })).toBe(true);
   });
 
   it.each(["file:///etc/passwd", "javascript:alert(1)", "data:text/plain,x", "ftp://host/x"])(
-    "accepts %s as source.url — QA-008",
+    "accepts %s as source.url; the inbound schema rejects it — QA-008",
     (url) => {
       // z.string().url() accepts any parseable URL, not just http(s).
       // detectPlatform rejects these on the extraction path, so nothing today
-      // can produce one. On the export path there is no detectPlatform, and
-      // source.url is written straight into the AnyList recipe's sourceUrl.
+      // can produce one. ADR-024 B restricts the inbound schema to http(s),
+      // which is what protects the export path.
       expect(SourceSchema.safeParse({ platform: "tiktok", creator: null, url }).success).toBe(true);
     },
   );

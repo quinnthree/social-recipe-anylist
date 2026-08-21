@@ -196,12 +196,12 @@ describe("POST /api/import — request handling", () => {
   });
 
   it.each(["application/xml", "application/x-www-form-urlencoded", "application/octet-stream"])(
-    "DEFECT QA-001: reports the unsupported media type %s as a 500",
+    "QA-001: reports the unsupported media type %s as a 500, not the approved 415",
     async (contentType) => {
       // Fastify raises FST_ERR_CTP_INVALID_MEDIA_TYPE with statusCode 415, and
-      // the error handler collapses every non-400 status to 500. Same root
-      // cause as the oversized-body case below: a client error reported as a
-      // server error.
+      // the error handler collapses every non-400 status to 500. The approved
+      // contract requires `415 Unsupported content type`. Locked as current
+      // behaviour; the target is in the specification block at the bottom.
       const { app } = server();
       const response = await app.inject({
         method: "POST",
@@ -254,11 +254,12 @@ describe("POST /api/import — request handling", () => {
     expect(response.statusCode).toBe(200);
   });
 
-  it("DEFECT QA-001: reports a body over the 8 KB limit as a 500, not a client error", async () => {
+  it("QA-001: reports a body over the 8 KB limit as a 500, not the approved 413", async () => {
     // Fastify raises FST_ERR_CTP_BODY_TOO_LARGE with statusCode 413. The error
     // handler maps anything that is not exactly 400 to 500, so an oversized
     // request — entirely the client's doing — is reported as a server failure
-    // and logged at error level. Locked here so the fix is visible when it lands.
+    // and logged at error level. The approved contract requires
+    // `413 Request body too large`.
     const { app } = server();
     const response = await app.inject({
       method: "POST",
@@ -269,6 +270,51 @@ describe("POST /api/import — request handling", () => {
 
     expect(response.statusCode).toBe(500);
     expect(response.json()).toEqual({ success: false, error: "Recipe import failed" });
+  });
+});
+
+describe("the minimum-usable-recipe gate does not cover this endpoint", () => {
+  // ADR-019 gates POST /api/imports. POST /api/import is unversioned, remains
+  // in the contract for CLI and internal use, and got no such gate — so the
+  // QA-003 path is still open on the route that actually ships today.
+  const empty = requireRecipe(fixture("instagram-login-blurb"));
+
+  it("returns 200 for an extraction with no ingredients and no instructions", async () => {
+    const { app } = server(
+      vi.fn(async (): Promise<ImportResult> => ({
+        recipe: empty,
+        saved: { name: empty.title, identifier: "anylist-junk-id" },
+      })),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: AUTH,
+      payload: { url: empty.source.url },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().success).toBe(true);
+    expect(response.json().saved.id).toBe("anylist-junk-id");
+  });
+
+  it("reports success while returning a confidence of 0.1 and six warnings", async () => {
+    const { app } = server(
+      vi.fn(async (): Promise<ImportResult> => ({
+        recipe: empty,
+        saved: { name: empty.title, identifier: "anylist-junk-id" },
+      })),
+    );
+    const body = (await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: AUTH,
+      payload: { url: empty.source.url },
+    })).json();
+
+    expect(body.recipe.confidence).toBe(0.1);
+    expect(body.recipe.warnings).toHaveLength(6);
+    expect(body.success).toBe(true);
   });
 });
 
@@ -323,9 +369,10 @@ describe("the error envelope is uniform", () => {
   });
 
   it("returns no X-Request-Id header on any response today", async () => {
-    // Part 2 of contracts.md requires requestId in every response and in
-    // X-Request-Id. Neither exists yet. This test fails the moment they land,
-    // which is the point: it forces the production API specs to be unskipped.
+    // The approved contract requires a request ID on EVERY response — 200, 400,
+    // 401, 404, 409, 413, 415, 422, 500 alike, with no exceptions. Neither the
+    // header nor the envelope field exists yet. This test fails the moment they
+    // land, which is the point: it forces the specifications to be unskipped.
     const { app } = server();
 
     const success = await app.inject({ method: "POST", url: "/api/import", headers: AUTH, payload: { url: golden.url } });
@@ -348,5 +395,123 @@ describe("the error envelope is uniform", () => {
 
     expect(response.headers["x-request-id"]).toBeUndefined();
     expect(response.body).not.toContain("client-supplied-id");
+  });
+});
+
+/**
+ * ENABLE when the approved HTTP error contract lands (contracts.md "HTTP error
+ * contract"). Change `describe.skip` to `describe` and delete the QA-001 locks
+ * and the "no X-Request-Id today" tests above.
+ *
+ * These apply to POST /api/import as well as the new routes: the approved
+ * request-ID rule says "every response ... with no exceptions".
+ */
+describe.skip("approved HTTP error contract — specification", () => {
+  it("returns 413 Request body too large for an oversized body", async () => {
+    const { app } = server();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: AUTH,
+      payload: { url: `https://www.tiktok.com/${"a".repeat(9000)}` },
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json().error).toBe("Request body too large");
+  });
+
+  it.each(["application/xml", "application/x-www-form-urlencoded", "application/octet-stream"])(
+    "returns 415 Unsupported content type for %s",
+    async (contentType) => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/import",
+        headers: { ...AUTH, "content-type": contentType },
+        payload: "<recipe/>",
+      });
+
+      expect(response.statusCode).toBe(415);
+      expect(response.json().error).toBe("Unsupported content type");
+    },
+  );
+
+  it("keeps the 8 KB limit on POST /api/import", async () => {
+    const { app } = server();
+    const ok = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: AUTH,
+      payload: { url: `https://www.tiktok.com/${"a".repeat(7000)}` },
+    });
+
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it("sets X-Request-Id on a successful response", async () => {
+    const { app } = server();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: AUTH,
+      payload: { url: golden.url },
+    });
+
+    expect(response.headers["x-request-id"]).toBeTruthy();
+  });
+
+  it.each([
+    ["401", { url: "/api/import", auth: false, payload: { url: golden.url } }],
+    ["400", { url: "/api/import", auth: true, payload: { nope: 1 } }],
+    ["404", { url: "/api/unknown", auth: true, payload: {} }],
+  ] as const)("sets X-Request-Id on a %s response", async (_label, options) => {
+    // "Every response carries a request ID — 200, 400, 401, 404, 409, 413, 415,
+    // 422, and 500 alike, with no exceptions."
+    const { app } = server();
+    const response = await app.inject({
+      method: "POST",
+      url: options.url,
+      ...(options.auth ? { headers: AUTH } : {}),
+      payload: options.payload,
+    });
+
+    expect(response.headers["x-request-id"]).toBeTruthy();
+    expect(response.json().requestId).toBe(response.headers["x-request-id"]);
+  });
+
+  it("sets X-Request-Id on GET /health", async () => {
+    // /health returns no envelope, so only the header applies. "No exceptions"
+    // is read literally here; if /health is meant to be exempt, the contract
+    // needs to say so.
+    const { app } = server();
+    const response = await app.inject({ method: "GET", url: "/health" });
+
+    expect(response.headers["x-request-id"]).toBeTruthy();
+  });
+
+  it("adopts a client-supplied X-Request-Id rather than replacing it", async () => {
+    const { app } = server();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: { ...AUTH, "x-request-id": "shortcut-run-42" },
+      payload: { url: golden.url },
+    });
+
+    expect(response.headers["x-request-id"]).toBe("shortcut-run-42");
+  });
+
+  it("keeps the request id out of the redaction surface", async () => {
+    // A client-supplied id is untrusted input that is echoed back. It must not
+    // become a way to smuggle content into a response or a log line.
+    const { app } = server();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: { ...AUTH, "x-request-id": "<script>alert(1)</script>" },
+      payload: { url: golden.url },
+    });
+
+    expect(response.headers["x-request-id"]).not.toContain("<script>");
   });
 });

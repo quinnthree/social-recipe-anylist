@@ -3,7 +3,7 @@
 Independent verification for this project. Owned by the QA workstream; it does
 not change production source.
 
-Last updated: 2026-08-21.
+Last updated: 2026-08-21, aligned to the final approved production contract.
 
 ## Running
 
@@ -28,12 +28,20 @@ fixtures/
 
 tests/
   golden/           the corpus, asserted end to end around the model boundary
-  contract/         the canonical Recipe contract on its own
+  contract/         the canonical Recipe contract, and inbound hardening (ADR-024)
   http/             the current API, and secret/log redaction
   failure-modes/    every failure the production API must classify
-  production/       specs for the frozen-but-unimplemented Part 2 contracts
+  social/           Instagram redirect and interstitial hardening
+  production/       specs for the approved-but-unimplemented contracts
   support/          fetch stubs, planted secrets, the log-capture child process
 ```
+
+Three of those directories hold **conformance suites** rather than tests: an
+exported function that takes an implementation and asserts the contract against
+it. `runIdempotencyStoreConformance`, `runFingerprintConformance`, and
+`runInboundRecipeConformance` each run today against a clearly-labelled
+reference implementation, so the suite is proven coherent before the real thing
+exists, and the Backend agent points them at the real thing when it does.
 
 ## The golden corpus
 
@@ -144,6 +152,32 @@ The second is the more important. Inventing "1 bunch sage" would be a worse bug
 than omitting it, so the extraction is right — and the user still has to fix the
 recipe. A confidence gate (ADR-009) built on today's signals would not catch it.
 That is worth knowing before the threshold is chosen.
+
+## Network safety
+
+The automated suite makes no live calls. `tests/support/fetch-stub.ts` provides
+`forbidNetwork()`, per-fixture stubs, and `stubFetchChain()`; every suite that
+touches ingestion installs one, and any URL other than the fixture's own throws.
+
+**A global Vitest network guard is worth adding, and is not added here.** It
+would need `vitest.config.ts` with a `setupFiles` entry that stubs `fetch` for
+every suite — a change to shared config, which needs oversight approval.
+
+The case for it: today the guarantee rests on each new test file remembering to
+install a stub. One that forgets, and whose code path reaches a real URL, would
+make a live call and nobody would notice until it flaked or the endpoint
+rate-limited. A global guard turns that from a silent risk into an immediate
+failure, and costs nothing at runtime.
+
+The case against, and why it is not unilateral: it changes how every existing
+suite runs, including the two that spawn subprocesses (`src/index.test.ts` and
+the log-capture child), which a `setupFiles` stub does not reach — so it would
+be a partial guarantee that reads as a total one. It also lands in a file no
+other workstream currently owns, during parallel waves.
+
+Recommendation: add it, with an explicit opt-out for suites that genuinely need
+real `fetch`, and document that subprocess tests are outside its reach. Awaiting
+approval.
 
 ## Related documents
 

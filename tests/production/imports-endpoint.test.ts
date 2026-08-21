@@ -286,35 +286,153 @@ describe.skip("POST /api/imports — specification (contracts.md Part 2 §A)", (
     });
   });
 
-  describe("Idempotency-Key", () => {
-    it("succeeds without one, because it is optional on this endpoint", async () => {
+  describe("minimum usable recipe (ADR-019)", () => {
+    // The approved acceptance gate: a non-blank title, at least one ingredient,
+    // and at least one instruction. Deterministic and structural — explicitly
+    // NOT a confidence threshold, because QA established that confidence does
+    // not predict whether edits are required.
+    const withRecipe = (overrides: Partial<typeof recipe>) => ({ ...recipe, ...overrides });
+
+    it("accepts a recipe meeting the structural minimum", async () => {
       const { app } = server();
       const response = await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody });
 
       expect(response.statusCode).toBe(200);
     });
 
-    it("accepts one without changing the response shape", async () => {
+    it.each([
+      ["no ingredients", withRecipe({ ingredients: [] })],
+      ["no instructions", withRecipe({ instructions: [] })],
+      ["neither", withRecipe({ ingredients: [], instructions: [] })],
+      ["a blank title", withRecipe({ title: "   " })],
+      ["an empty title", withRecipe({ title: "" })],
+    ])("returns 422 when extraction yields %s", async (_label, _extracted) => {
+      // Wire the injected extraction dependency to return `_extracted`.
+      const { app } = server();
+      const response = await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.json().error).toBe("Recipe could not be extracted");
+    });
+
+    it("rejects the login-page blurb, which is the case the gate exists for", async () => {
+      // The instagram-login-blurb fixture extracts to an empty recipe at
+      // confidence 0.1. Under the current one-shot endpoint that is a 200 and a
+      // junk recipe in AnyList (QA-003). The structural gate is what stops it.
+      const blurb = requireRecipe(fixture("instagram-login-blurb"));
+
+      expect(blurb.ingredients).toHaveLength(0);
+      expect(blurb.instructions).toHaveLength(0);
+
       const { app } = server();
       const response = await app.inject({
         method: "POST",
         url: "/api/imports",
-        headers: { ...AUTH, "idempotency-key": "client-key-1" },
-        payload: validBody,
+        headers: AUTH,
+        payload: { schemaVersion: 1, url: blurb.source.url },
       });
 
+      expect(response.statusCode).toBe(422);
+    });
+
+    it("does NOT reject a low-confidence recipe that meets the minimum", async () => {
+      // The distinction ADR-019 turns on. Confidence takes no part in the
+      // decision, so a recipe scoring 0.8 with warnings is a success.
+      const { app } = server();
+      const response = await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody });
+
       expect(response.statusCode).toBe(200);
-      expect(response.json().schemaVersion).toBe(1);
+      expect(response.json().recipe.warnings.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it("does NOT reject a recipe merely for carrying warnings", async () => {
+      const { app } = server();
+      const response = await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("returns the recipe's own confidence untouched, gate or no gate", async () => {
+      const { app } = server();
+      const body = (await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody })).json();
+
+      expect(body.recipe.confidence).toBe(recipe.confidence);
+    });
+  });
+
+  describe("no durable idempotency on this endpoint", () => {
+    it("succeeds without an Idempotency-Key", async () => {
+      // ADR-017: only POST /api/exports/anylist requires durable idempotency.
+      // This endpoint is read/compute-only and performs no external write.
+      const { app } = server();
+      const response = await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("does not report an idempotent field, because there is no replay here", async () => {
+      const { app } = server();
+      const body = (await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody })).json();
+
+      expect(body.idempotent).toBeUndefined();
+      expect(body.originalRequestId).toBeUndefined();
+    });
+
+    it("runs extraction again for a repeated identical request", async () => {
+      // No dedup, deliberately: repeating an extraction costs a model call but
+      // creates nothing, so there is nothing to make idempotent.
+      const { app } = server();
+
+      const first = await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody });
+      const second = await app.inject({ method: "POST", url: "/api/imports", headers: AUTH, payload: validBody });
+
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      expect(second.json().requestId).not.toBe(first.json().requestId);
+    });
+  });
+
+  describe("body limit and content type", () => {
+    it("returns 413 Request body too large above 8 KB", async () => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/imports",
+        headers: AUTH,
+        payload: { schemaVersion: 1, url: `https://www.tiktok.com/${"a".repeat(9000)}` },
+      });
+
+      expect(response.statusCode).toBe(413);
+      expect(response.json().error).toBe("Request body too large");
+    });
+
+    it("returns 415 Unsupported content type for a non-JSON body", async () => {
+      const { app } = server();
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/imports",
+        headers: { ...AUTH, "content-type": "application/xml" },
+        payload: "<import/>",
+      });
+
+      expect(response.statusCode).toBe(415);
+      expect(response.json().error).toBe("Unsupported content type");
     });
   });
 });
 
 describe("CONTRACT GAPS for POST /api/imports", () => {
-  it.each(["QA-012", "QA-013"])("%s is recorded as unresolved, not assumed", (id) => {
-    // Both block an assertion the specification above would otherwise make.
-    // They are listed rather than guessed at, per the QA brief: surface an
-    // untestable contract instead of rewriting it.
-    expect(gap(id).blocks.length).toBeGreaterThan(0);
-    expect(gap(id).severity).toBe("blocks-ios-client");
+  it("QA-013 remains open: the server-issued recipe identity question", () => {
+    // contracts.md §A still marks this unresolved, pending a decision on
+    // persistence. The specification above asserts the no-persistence reading —
+    // a `recipe` and no identity field — so if persistence lands, the response
+    // key set changes and that test must be revisited before iOS builds on it.
+    expect(gap("QA-013").severity).toBe("blocks-ios-client");
+  });
+
+  it("QA-012 is resolved: the 500 error string is now pinned by route", () => {
+    // The approved HTTP error table assigns "Recipe import failed" to the
+    // import routes and "Recipe export failed" to the export route.
+    expect(gap("QA-012").resolved).toBe(true);
   });
 });

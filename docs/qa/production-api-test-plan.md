@@ -1,174 +1,214 @@
 # Production API Test Plan
 
-Test coverage prepared for the contracts frozen in `contracts.md` Part 2 and
-**not yet implemented**: `POST /api/imports`, `POST /api/exports/anylist`, and
-`Idempotency-Key`.
+Coverage prepared for the **final approved production contract**:
+`POST /api/imports`, `POST /api/exports/anylist`, `Idempotency-Key`, request
+IDs, the HTTP error contract, canonical input hardening, and typed AnyList
+error codes. None of it is implemented.
 
 Last updated: 2026-08-21.
 
 ## How the specs are shipped
 
-Each endpoint has one file with two halves.
+Each area has active tripwires plus a skipped specification.
 
-**Active tripwires** assert the endpoint does not exist: `401` unauthenticated,
-`404` authenticated, pipeline never invoked. They pass today and **fail the
-moment the route is added**. That is deliberate — it forces whoever implements
-the endpoint to open the file and enable the specification rather than ship it
-untested.
+**Tripwires** assert the thing does not exist yet — `404` for an unrouted
+endpoint, `undefined` for a missing header, no `code` on `AnyListError`. They
+pass today and **fail the moment the feature lands**, which forces whoever built
+it to enable the specification rather than ship untested.
 
-**A skipped specification** holds the real assertions, written out in full, in a
-`describe.skip`. Enabling it is one edit.
+**Skipped specifications** hold the real assertions in full. Enabling one is a
+single edit.
 
 | File | Active | Skipped |
 |---|---|---|
-| `tests/production/imports-endpoint.test.ts` | 5 | 25 |
-| `tests/production/exports-anylist-endpoint.test.ts` | 12 | 28 |
-| `tests/production/idempotency-contract.test.ts` | 27 | 0 |
-
-`tests/http/current-api.test.ts` carries the third tripwire: "returns no
-X-Request-Id header on any response today". Request IDs are a Part 2
-requirement, so that test fails when they land.
+| `tests/production/imports-endpoint.test.ts` | 5 | 38 |
+| `tests/production/exports-anylist-endpoint.test.ts` | 13 | 53 |
+| `tests/production/idempotency-contract.test.ts` | 47 | 0 |
+| `tests/production/anylist-error-contract.test.ts` | 13 | 9 |
+| `tests/production/contract-gaps.test.ts` | 16 | 0 |
+| `tests/contract/inbound-hardening.test.ts` | 54 | 4 |
+| `tests/social/instagram-hardening.test.ts` | 12 | 17 |
+| `tests/http/current-api.test.ts` | 44 | 12 |
 
 ### What the implementer must provide
 
-Both specs need an injectable dependency, the way `importRecipe` is injectable
-on `ServerDeps` today, so route tests never reach TikTok, Anthropic, or AnyList:
+Injectable dependencies on `ServerDeps`, the way `importRecipe` is injectable
+today, so route tests never reach TikTok, Anthropic, AnyList, or Redis:
 
 - `/api/imports` — an extraction dependency.
-- `/api/exports/anylist` — a `RecipeSaver`. The interface already exists
-  (ADR-002); it simply is not reachable from `buildServer`.
+- `/api/exports/anylist` — a `RecipeSaver` and an `IdempotencyStore`. The
+  `RecipeSaver` interface already exists (ADR-002); it is simply not reachable
+  from `buildServer`.
 
-Designing those seams belongs to the backend. The specs require only that they
+Designing those seams is the backend's call. The specs require only that they
 exist.
 
 ## A. `POST /api/imports`
-
-Covered by the skipped specification:
 
 | Area | Assertions |
 |---|---|
 | Auth | missing and wrong bearer → `401 Unauthorized` |
 | `schemaVersion` | `1` accepted and echoed; missing / null / string / non-integer → `400 Invalid request body`; version `2` → `400 Unsupported schema version` |
-| Strict body | unknown key rejected, not ignored (ADR-011); missing, non-string, and malformed `url` rejected |
-| Extraction only | full canonical Recipe returned and re-validated with `RecipeSchema`; all ten fields present; no `saved`; no AnyList identifier anywhere in the body |
-| Provenance | `source` equals the extracted provenance exactly |
-| Request IDs | `requestId` in body; `X-Request-Id` header matches it; a client-supplied `X-Request-Id` is adopted; present on failures too |
-| Safe failures | `400 Invalid recipe URL`, `400 Unsupported platform`, `422 Recipe could not be extracted`; no message, stack, or provider detail; body is exactly `{success, error, requestId}` |
-| Idempotency | succeeds without a key (optional here); accepting one does not change the response shape |
+| Strict body | unknown key rejected; missing, non-string, malformed `url` rejected |
+| Extraction only | full canonical Recipe re-validated with `RecipeSchema`; all ten fields; no `saved`; no AnyList identifier anywhere in the body |
+| **Minimum usable recipe** | ≥1 ingredient, ≥1 instruction, non-blank title, else `422 Recipe could not be extracted`; the `instagram-login-blurb` fixture is rejected |
+| **Not confidence-gated** | a low-confidence recipe meeting the minimum succeeds; warnings never cause rejection; `confidence` is returned untouched |
+| **No durable idempotency** | succeeds with no `Idempotency-Key`; no `idempotent` or `originalRequestId` field; a repeated identical request re-extracts |
+| Request IDs | `requestId` in body, matching `X-Request-Id`; a client-supplied value is adopted; present on failures |
+| Safe failures | `400 Invalid recipe URL`, `400 Unsupported platform`, `422`; body is exactly `{success, error, requestId}`; nothing leaked |
+| Limits | `413 Request body too large` above 8 KB; `415 Unsupported content type` |
 
-**Not asserted, and why:** the `500` body (QA-012) and whether a server-issued
-recipe identity is returned (QA-013). Both are unresolved — see below.
+The minimum-usable-recipe block is the important addition. It is asserted as
+**structural**: five cases (no ingredients, no instructions, neither, blank
+title, empty title) each produce `422`, and two cases prove confidence takes no
+part in the decision. That is ADR-019 expressed as tests — and it is the fix for
+QA-003, on this endpoint only.
 
 ## B. `POST /api/exports/anylist`
 
 | Area | Assertions |
 |---|---|
 | `schemaVersion` | as above, plus `400 Unsupported schema version` |
-| Strict validation | unknown key rejected at three levels: top-level body, recipe object, and ingredient object |
-| Recipe validation | missing/empty title, bad platform, negative servings, confidence > 1, and an *omitted* nullable field each → `400 Invalid recipe` |
-| Edited recipes | a recipe the user corrected is accepted and exported under the edited title |
-| Warnings | a recipe carrying extraction warnings exports normally — warnings are **never** a rejection reason (ADR-010) |
-| No recomputation | `confidence` and `warnings` are not reassessed on export (ADR-010) |
-| Provenance | an altered `source.url` is **accepted**, because the invariant is not server-verifiable (ADR-013); shape is still enforced |
-| Export | verified AnyList result; `saved.id`; `idempotent: false`; no extraction performed; AnyList failure → `500 Recipe export failed` with nothing leaked |
-| Request IDs | as above |
-| Idempotency | works without a key; same key + same body replays with `idempotent: true` and the same `saved.id`; same key + different body → `409 Idempotency key conflict`; two concurrent same-key requests → at most one performs the export |
+| Strict validation | unknown key rejected at four levels: body, recipe, ingredient, source |
+| Recipe validation | missing/empty title, bad platform, negative servings, confidence > 1, omitted nullable → `400 Invalid recipe` |
+| Edited recipes | a corrected recipe is accepted and exported under the edited title |
+| Warnings | a recipe carrying warnings exports normally — never a rejection reason (ADR-010) |
+| No recomputation | `confidence`/`warnings` are not reassessed |
+| Provenance | an altered `source.url` is **accepted** — the invariant is not server-verifiable (ADR-013); shape still enforced |
+| **Idempotency-Key required** | missing, empty, or >128 chars → `400 Invalid idempotency key`; 128 exactly accepted; no AnyList write when the key is invalid |
+| **Replay** | `idempotent: false` first, `true` on replay, same `saved.id`; `originalRequestId` absent first, present on replay, different from `requestId` |
+| **Fingerprint** | a re-serialised identical recipe with reordered keys replays rather than conflicting |
+| **409s** | `Idempotency key conflict`, `Export already in progress`, `Export outcome unknown`; every 409 carries a `requestId` |
+| **FAILED_SAFE retry** | a login failure is retried and succeeds; an ambiguous outcome is never retried |
+| Inbound hardening | whitespace title, non-http `source.url`, `max < min` → `400 Invalid recipe`; `max === min` accepted |
+| Limits | 64 KB allowed, `413` above it, `415` for non-JSON |
 
-The provenance test is worth calling out. It asserts that the server **accepts**
-a tampered `source.url`, because that is what ADR-013 actually decided. Writing
-it the other way round would encode a guarantee the system does not make.
+Two assertions are worth calling out because they encode decisions rather than
+mechanics:
 
-Three active tests guard the edited-recipe fixture itself — that it is still a
-valid canonical Recipe, that it really differs from the extracted one, and that
-its provenance is untouched — so the skipped specs cannot pass for the wrong
-reason once enabled.
+- **The provenance test asserts the server *accepts* a tampered `source.url`.**
+  That is what ADR-013 decided. Writing it the other way round would encode a
+  guarantee the system does not make.
+- **"does not render an accepted `{ n, n }` cook time as a range"** is the
+  consumer-visible half of QA-020, and will fail until `describeTime` is fixed.
+
+Three active tests guard the edited-recipe fixture itself, so the skipped specs
+cannot pass for the wrong reason once enabled.
 
 ## C. Idempotency
 
 `tests/production/idempotency-contract.ts` is a **store-agnostic conformance
-suite**. It picks no storage technology and implements no endpoint. ADR-012
-freezes the semantics and leaves the store to the backend, so the suite is built
-to be pointed at whatever gets chosen:
+suite**. ADR-017 selects Upstash Redis behind an `IdempotencyStore`
+abstraction; the suite is written against the smallest port those semantics
+need, so it can be pointed at the real store:
 
 ```ts
-describe("vercel kv store", () => runIdempotencyStoreConformance({ createStore }));
+describe("upstash store", () => runIdempotencyStoreConformance({ createStore, staleAfterMs }));
 ```
 
-It runs today against a **reference fake** in
-`idempotency-contract.test.ts` — an in-memory map that exists only to prove the
-suite is coherent and runnable. ADR-012 rules an in-process map out explicitly;
+It runs today against a **reference fake** — an in-memory map that exists only
+to prove the suite is coherent. ADR-012 rules an in-process map out explicitly;
 that fake must never move into `src/`.
 
-### The port
+### What the store suite asserts
 
-Three methods — `claim`, `complete`, `fail` — with `now` passed in so retention
-is testable without waiting 24 hours. The **names are a test seam, not a
-contract**; the backend may call them anything and adapt. The behaviour is the
-frozen part.
-
-### What the suite asserts
-
-- an unseen key is claimed; separate keys are independent; a 255-character key is accepted
-- same key + same body while running → `IN_PROGRESS`
-- same key + same body after completion → the stored response, replayed
-- `FAILED_SAFE` and `AMBIGUOUS` are each reported as themselves
+- an unseen key is claimed; keys are independent; a 128-character key is accepted
+- same key + same fingerprint while running → `IN_PROGRESS`
+- after completion → the recorded result, including the originating `requestId`
+- **`FAILED_SAFE` is re-claimed** so the export retries — the amended rule
+- **`AMBIGUOUS` is never re-claimed**
 - a `COMPLETED` record is never downgraded to a retryable one
-- same key + different body → `conflict`, in every one of the four states
-- 20 concurrent claims → **exactly one** wins
-- retention: a record just under 24h still replays; a record over 24h is gone,
-  and so is its conflict
+- same key + different fingerprint → `conflict`, in all four states, including
+  over a `FAILED_SAFE` record
+- **20 concurrent claims → exactly one winner**, and separately **10 concurrent
+  re-claims of a `FAILED_SAFE` record → exactly one winner** (the transition
+  most easily made non-atomic by accident)
+- a stale `IN_PROGRESS` is **never** returned as claimable, and is reported as
+  `AMBIGUOUS`
+- retention: just under 24h replays; over 24h is gone
 
-The last one has a consequence worth stating plainly, because the contract does
-not: **after 24 hours the same key with the same body is claimable again, and a
-retry will write to AnyList a second time.** Retention is a bound on the
-guarantee, not a footnote to it.
+### Fingerprint (ADR-018)
 
-### The policy table
+`runFingerprintConformance` asserts a SHA-256 hex digest, stability, key-order
+independence, encoding-whitespace independence, sensitivity to any value change,
+and — importantly — that **ingredient and instruction order are significant**. A
+normalisation that sorted arrays would make two different recipes share a
+fingerprint, and the second export would be silently swallowed as a replay.
 
-`REQUIRED_ACTION` maps each state to what the endpoint must do, and
-`mayCallCreateRecipe` is asserted to be true in exactly two states — `NEW` and
-`FAILED_SAFE`. Everything else, including `AMBIGUOUS`, is proven not to permit a
-write. That is ADR-012's central rule, expressed as something that fails a build.
+### Policy table
 
-A separate test asserts the suite does **not** claim exactly-once semantics. The
-AnyList API exposes no idempotency key, so a write that landed but whose outcome
-we never learned cannot be detected by protocol. `AMBIGUOUS` is the name of that
-hole, not a fix for it.
+`REQUIRED_ACTION` maps each state to an action; `mayCallCreateRecipe` is
+asserted true in exactly `NEW` and `FAILED_SAFE`. `REQUIRED_RESPONSE` pins
+`409` and its three distinct error strings. Every rejecting state is asserted to
+be a `409`.
 
-### Today's blocker
+### Blocker
 
-`AnyListRecipeSaver` cannot tell `FAILED_SAFE` from `AMBIGUOUS` — every
-`createRecipe` failure becomes the same error (QA-009). The state machine above
-cannot be populated correctly until it can. This is the one prerequisite the
-backend cannot work around, and it is a change to `src/anylist/`, which belongs
-to the AnyList research workstream.
+`AnyListError` has no `code` (QA-009), so the state machine cannot be populated
+correctly. **This gates the whole idempotency implementation.**
 
-## Unresolved contract questions
+## D. AnyList error classification
 
-Recorded in code as `UNRESOLVED_CONTRACT_QUESTIONS` in
-`tests/production/contract-gaps.ts`, so resolving one is a deliberate edit
-rather than a quiet assumption in a test. Each blocks a specific assertion.
+`tests/production/anylist-error-contract.ts` holds the ADR-020 mapping as data.
+Assertable today because it is a contract, not code:
 
-| ID | Question | Blocks |
+- every code has a state
+- **only `login_failed` is `FAILED_SAFE`** — asserted as an exact list, so
+  adding a retryable code is a deliberate edit
+- all three write-path codes are `AMBIGUOUS`
+- a `createRecipe` exception can never become retryable
+- exactly one code may reach `createRecipe` again
+
+The scenario→code specs (`loginThrows → login_failed`,
+`createThrows → create_failed`, `verifyThrows → verify_unreadable`,
+`verifyReturnsNull` / `verifyReturnsOtherId → verify_missing`) are skipped, plus
+a spec that a `createRecipe` timeout is `create_failed` and nothing safer.
+
+## E. Instagram hardening
+
+`tests/social/instagram-hardening.test.ts`. Active tests record why the approved
+policy cannot exist yet: the adapter passes `redirect: "follow"`, so undici
+resolves the whole chain and exactly one request is observable — there is no hop
+to validate. It also never reads `response.url`, so it trusts a body without
+checking where it came from, which an active test demonstrates.
+
+Skipped specification covers the approved policy: same-policy redirect followed;
+relative and protocol-relative `Location` resolved; external, lookalike-host,
+and http-downgrade redirects rejected **before the off-policy destination is
+requested**; empty, non-URL, `javascript:`, and `data:` `Location` values
+rejected; a 3xx with no `Location`; a bounded chain; a self-referential loop;
+a redirect to the login wall; and an interstitial description rejected rather
+than treated as a caption — the fix for QA-002 — with no Anthropic call made.
+
+Implementing this needs `redirect: "manual"`, at which point the chain becomes
+several observable fetches and the assertions become meaningful.
+
+## Contract questions
+
+Recorded in `tests/production/contract-gaps.ts` with `resolved` and `resolution`
+fields, and asserted by `contract-gaps.test.ts`.
+
+**Six of eight resolved by the approved contract:**
+
+| ID | Resolution |
+|---|---|
+| QA-011 | `409 Export already in progress` / `409 Export outcome unknown`. All five states now have a defined response. |
+| QA-012 | Error strings assigned by route: `Recipe import failed` / `Recipe export failed`. |
+| QA-014 | ADR-018 fingerprint: validate → normalise → serialise → SHA-256. Raw bytes never compared. |
+| QA-015 | Length 1–128, required on the export route, `400 Invalid idempotency key`. |
+| QA-016 | "Every response… with no exceptions." `X-Request-Id` always. |
+| QA-017 | The server re-claims: `FAILED_SAFE → IN_PROGRESS` atomic, then retry. |
+
+**Five open:**
+
+| ID | Question | Severity |
 |---|---|---|
-| QA-011 | `IN_PROGRESS` ("Return in-progress") and `AMBIGUOUS` ("Surface for human or client decision") have **no status code and no error string** | Any assertion on a replayed `IN_PROGRESS` or `AMBIGUOUS` key |
-| QA-012 | `/api/imports` has no `500` error string; it inherits Part 1's `Recipe import failed`, which names an operation it does not perform | The `500` body for `/api/imports` |
-| QA-013 | Whether `/api/imports` returns a server-issued recipe identity is marked open, pending a persistence decision | The full key set of a successful response |
-| QA-014 | `409` is defined on "a different request body" without a comparison basis — raw bytes, canonical JSON, or a hash of which fields | That a semantically identical body does not conflict |
-| QA-015 | `Idempotency-Key` is "max 255 chars" with no stated behaviour for a longer key | The response to an over-length key |
-| QA-016 | "Every response carries `requestId`" sits in Part 2; whether it covers the shared `401`/`404` handlers and the unversioned `POST /api/import` is unstated, and Part 1 says request IDs are not exposed at all | `requestId` on a `401`, a `404`, or any `/api/import` response |
-| QA-017 | `FAILED_SAFE` is "safe to retry" — but not whether the *server* retries on replay or returns the stored failure and leaves it to the client | Whether a replayed `FAILED_SAFE` key performs a write |
-| QA-018 | The export example returns `saved.name`, but `SaveResult.name` is the submitted title, not a value read back from AnyList | That `saved.name` reflects what AnyList stored |
+| QA-013 | Whether `/api/imports` returns a server-issued recipe identity — still marked open, pending a persistence decision | blocks-ios-client |
+| QA-018 | No response field reflects what AnyList *stored*: `saved.name` is the submitted title and `saved.id` is client-generated (ADR-021) | documentation |
+| QA-021 | 24-hour retention vs "a stale `IN_PROGRESS` must not become retryable" | blocks-backend |
+| QA-022 | "`X-Request-Id` on every response, no exceptions" vs `GET /health` | documentation |
+| QA-023 | Only `title` is hardened against whitespace; every other string shares the weakness | blocks-backend |
 
-QA-011, QA-012, and QA-013 are marked `blocks-ios-client`: a thin client
-(ADR-004) is defined entirely by the contract it calls, and it cannot handle a
-response whose status code is undefined. Two of the five idempotency states are
-in that position. These are worth resolving before Wave 1B starts rather than
-during it.
-
-QA-014, QA-015, QA-016, and QA-017 are `blocks-backend` — they change what gets
-built, not what the client expects. QA-018 is documentation.
-
-None of these is a contradiction in the contract. They are places where it stops
-short of being testable, which is exactly what this workstream was asked to
-surface rather than fill in.
+QA-013 is the last one blocking the iOS client. QA-021 is the one worth
+resolving before the export endpoint ships, because it changes what the
+guarantee actually means at the boundary.

@@ -5,18 +5,32 @@ import { readRecordedBody } from "../../fixtures/types.js";
 
 const TIKTOK_OEMBED_PREFIX = "https://www.tiktok.com/oembed?url=";
 
+export interface FetchCall {
+  url: string;
+  /** The RequestInit the adapter passed, so redirect policy can be asserted. */
+  init: Record<string, unknown>;
+}
+
 export interface FetchLog {
   /** Every URL the code under test requested, in order. */
   urls: string[];
+  /** The same requests, with the options each was made with. */
+  calls: FetchCall[];
 }
 
-function install(handler: (url: string) => Response | Promise<Response>): FetchLog {
-  const log: FetchLog = { urls: [] };
+function install(
+  handler: (url: string, init: Record<string, unknown>) => Response | Promise<Response>,
+): FetchLog {
+  const log: FetchLog = { urls: [], calls: [] };
 
-  vi.stubGlobal("fetch", async (input: unknown, _init?: unknown): Promise<Response> => {
+  vi.stubGlobal("fetch", async (input: unknown, init?: unknown): Promise<Response> => {
     const url = typeof input === "string" ? input : String(input);
+    const options = (init ?? {}) as Record<string, unknown>;
+
     log.urls.push(url);
-    return handler(url);
+    log.calls.push({ url, init: options });
+
+    return handler(url, options);
   });
 
   return log;
@@ -77,5 +91,42 @@ export function stubFetchResponse(status: number, body = ""): FetchLog {
 export function stubFetchRejection(error: unknown): FetchLog {
   return install(() => {
     throw error;
+  });
+}
+
+/** One hop of a redirect chain, as an upstream server would answer it. */
+export interface Hop {
+  status: number;
+  /** The raw Location header, exactly as served. Omit for a terminal response. */
+  location?: string;
+  body?: string;
+}
+
+/**
+ * Serves a redirect chain, one hop per request.
+ *
+ * Today the Instagram adapter passes `redirect: "follow"`, so undici resolves
+ * the whole chain internally and the adapter sees exactly one call — which is
+ * precisely why per-hop validation is impossible without `redirect: "manual"`.
+ * This stub models the manual case the approved hardening requires, so the
+ * specs for it can be written now and enabled when the adapter changes.
+ */
+export function stubFetchChain(hops: readonly Hop[]): FetchLog {
+  let index = 0;
+
+  return install(() => {
+    const hop = hops[index];
+    index += 1;
+
+    if (hop === undefined) {
+      throw new Error(`The chain has only ${hops.length} hops, but request ${index} was made.`);
+    }
+
+    const headers: Record<string, string> =
+      hop.location === undefined
+        ? { "content-type": "text/html; charset=utf-8" }
+        : { location: hop.location };
+
+    return new Response(hop.body ?? "", { status: hop.status, headers });
   });
 }
