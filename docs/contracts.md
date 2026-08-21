@@ -2,10 +2,16 @@
 
 This document has two parts.
 
-- **Part 1 — Current** describes what is implemented and running today.
-- **Part 2 — Proposed** describes the production contracts under discussion.
-  **Nothing in Part 2 is implemented.** Do not build against it until it is
-  approved and moved into Part 1.
+- **Part 1 — CURRENT** describes what is implemented and running today.
+- **Part 2 — PROPOSED** describes approved production contracts that are **not
+  yet built**. Do not build against Part 2 as though it exists; do build it as
+  specified.
+- **RESEARCH-PROVEN** marks measured findings from the AnyList and QA
+  workstreams. These are observations about the world, not statements about our
+  code. They appear inline where relevant and in full in `architecture.md`.
+
+Every claim in this document is tagged with one of those three. If something is
+untagged, treat it as CURRENT.
 
 Last updated: 2026-08-21.
 
@@ -151,7 +157,16 @@ scaffold and are unused.
   recipe in AnyList.
 - **No persistence.** No database, queue, job IDs, or server-side recipe identity.
 - **No request IDs are returned.** Fastify assigns an internal `reqId` for logs
-  only; it is not exposed in any response.
+  only; it is not exposed in any response, and no `X-Request-Id` header is set.
+- **`413` and `415` are not produced.** Verified against the running server: an
+  oversized body returns `500 Recipe import failed`, and a `text/plain` body
+  returns `400 Invalid request body`. The error handler maps every non-400
+  status to 500. Part 2 requires distinct codes.
+- **Native stderr is not covered by redaction.** RESEARCH-PROVEN: on failed
+  AnyList login the native library writes response metadata — including
+  `set-cookie` values — straight to stderr, before any JavaScript logging can
+  intercept it. Pino redaction governs our logs, not a native library's file
+  descriptor.
 
 ---
 
@@ -218,7 +233,9 @@ Content-Type: application/json
 { "schemaVersion": 1, "recipe": { /* full canonical Recipe */ } }
 ```
 
-**200** — after server-side verification, as today:
+**200** — after read-back verification, as today. Note the id is
+**client-generated** by the AnyList library, so `createRecipe()` returning it is
+*not* persistence proof; `getRecipeById()` is (RESEARCH-PROVEN, ADR-021):
 
 ```json
 {
@@ -258,68 +275,102 @@ Every production request and successful response carries `schemaVersion: 1`.
 This exists because the canonical Recipe becomes an *inbound* contract for the
 first time (ADR-007). Version 1 is the shape documented in Part 1.
 
-## Idempotency-Key
+## Idempotency-Key — PROPOSED
 
-Client-generated opaque string, max 255 chars. Recommended on
-`/api/exports/anylist`, optional on `/api/imports`.
+**Required** on `POST /api/exports/anylist`. **Not required** on
+`POST /api/imports`, which is read/compute-only and performs no external write.
 
-### Frozen semantics
-
-- **Retention:** 24 hours.
-- **Same key + same request + completed:** replay the original completed
-  response. No second AnyList write.
-- **Same key + different request body:** `409 Idempotency key conflict`.
-- **Concurrent requests with the same key:** at most one may execute the export.
-- **A request already marked in progress must not execute `createRecipe`
-  again.**
-- **Ambiguous external-write failures must never automatically retry
-  `createRecipe`.**
-
-### Conceptual states
-
-| State | Meaning | On a replay |
-|---|---|---|
-| `NEW` | Key unseen. | Proceed; claim the key first. |
-| `IN_PROGRESS` | Claimed, export running or interrupted. | Do **not** call `createRecipe`. Return in-progress; never re-execute. |
-| `COMPLETED` | Export succeeded and was verified. | Replay the stored response, `idempotent: true`. |
-| `FAILED_SAFE` | Failed with confidence that **no** AnyList write occurred (validation rejected it, login failed, request never sent). | Safe to retry. |
-| `AMBIGUOUS` | `createRecipe` was called and the outcome is unknown — timeout, connection reset, or a failed verification read after a possible write. | **Never auto-retry.** Surface for human or client decision. |
-
-The `FAILED_SAFE` / `AMBIGUOUS` distinction is the important one. It is the
-difference between "definitely nothing happened, try again" and "something may
-already be in the user's AnyList account." Only the first is retryable.
-
-### Honest limits
-
-**This does not provide exactly-once semantics against AnyList, and must not be
-described as if it does.** The AnyList API exposes no idempotency key of its
-own, so we cannot ask it to deduplicate. What these semantics actually buy:
-
-- Our own retries and client replays will not cause a second write.
-- A write whose outcome we cannot determine is never blindly repeated.
-
-What they cannot prevent: a genuine `AMBIGUOUS` case where the write landed but
-we never learned it. That resolves by inspection, not by protocol.
+- Length **1–128 characters**. Missing, empty, over-length, or otherwise
+  invalid: `400 Invalid idempotency key`.
 
 ### Storage
 
-Idempotency requires **durable, shared** state. An in-process map is
-**explicitly not acceptable** on Vercel: it is lost on restart and inconsistent
-across instances, which is worse than no idempotency because it presents a false
-guarantee.
+**Upstash Redis via the Vercel Marketplace**, behind an `IdempotencyStore`
+abstraction so the backing store can be replaced without touching route logic.
+Retention **24 hours**.
 
-**The storage implementation is deliberately not chosen in Wave 0.** The Backend
-agent will compare the smallest appropriate Vercel-compatible durable stores and
-propose one. The semantics above are frozen regardless of that choice.
+This is **request-coordination infrastructure only**. It is not a general
+application database and does not reopen the no-database scope decision
+(ADR-017). The store must support **atomic state transitions** — specifically
+`NEW → IN_PROGRESS` and `FAILED_SAFE → IN_PROGRESS` must be atomic claims, or
+two concurrent same-key requests can both believe they won.
 
-## Request IDs
+### Frozen states
 
-Every response, success or failure, carries `requestId`. Same value in the
-`X-Request-Id` response header and in every log line for that request. If the
-client sends `X-Request-Id`, it is adopted rather than generated, so a Shortcut
-or iOS client can correlate its own traces.
+| State | Meaning | Behaviour on a same-key request |
+|---|---|---|
+| `NEW` | Key unseen. | Atomically claim → `IN_PROGRESS`, then proceed. |
+| `IN_PROGRESS` | Claimed; export running or interrupted. | `409 Export already in progress`. Never call `createRecipe` again. |
+| `COMPLETED` | Export succeeded and was verified. | Replay the recorded result. No second AnyList write. |
+| `FAILED_SAFE` | Failed with positive evidence that **no** AnyList write occurred. | Atomically re-claim → `IN_PROGRESS`, then retry. |
+| `AMBIGUOUS` | `createRecipe` may have been reached; outcome unknown. | `409 Export outcome unknown`. Never auto-retry. |
 
-Not implemented today: no request ID is currently exposed in any response.
+### Rules
+
+- Same key + same validated request + `COMPLETED` → return the recorded result
+  without another AnyList write.
+- Same key + **different** request → `409 Idempotency key conflict`.
+- Concurrent same-key request while `IN_PROGRESS` → `409 Export already in
+  progress`.
+- `AMBIGUOUS` → `409 Export outcome unknown`.
+- **A stale `IN_PROGRESS` record must not automatically become retryable.**
+  Absent positive evidence that `createRecipe` was never reached, a stale
+  `IN_PROGRESS` is treated as `AMBIGUOUS`. Expiry is not evidence of safety.
+
+### Not exactly-once
+
+**This does not provide exactly-once semantics against AnyList and must never be
+described as if it does.** AnyList exposes no native idempotency key, so we
+cannot ask it to deduplicate. What this buys: our own retries and client replays
+will not produce a second write, and an ambiguous outcome is never blindly
+repeated. What it cannot prevent: a write that landed while we lost the answer.
+
+RESEARCH-PROVEN and compounding this: `deleteRecipe()` returns success without
+deleting, so a duplicate we create **cannot be cleaned up programmatically**
+(ADR-021). That is precisely why the `AMBIGUOUS` path refuses to retry.
+
+## Request fingerprint — PROPOSED
+
+"Same request" is decided by fingerprint, never by raw HTTP bytes.
+
+1. **Validate** the export request first.
+2. **Normalise** to the accepted canonical shape.
+3. **Deterministically serialise** that normalised value.
+4. **SHA-256** it.
+5. **Store** the fingerprint on the idempotency record.
+
+Equivalent JSON with different key ordering, or differing insignificant
+whitespace, must **not** produce `409 Idempotency key conflict`. Comparing raw
+bytes would make a conflict out of a re-serialisation, which is a false alarm
+the client cannot fix.
+
+## Request IDs — PROPOSED
+
+**Every** response carries a request ID — `200`, `400`, `401`, `404`, `409`,
+`413`, `415`, `422`, and `500` alike, with no exceptions.
+
+- `X-Request-Id` response header, always.
+- `requestId` in the JSON envelope wherever an envelope is returned.
+- A client-supplied `X-Request-Id` is adopted rather than replaced, so a
+  Shortcut or iOS client can correlate its own traces.
+
+### Replay identifiers
+
+On an idempotent replay, two identifiers are in play and they mean different
+things:
+
+| Field | Meaning |
+|---|---|
+| `requestId` | The **current** HTTP request — the one being answered now. |
+| `originalRequestId` | The request associated with the **original** completed AnyList write and its recorded result. |
+
+`originalRequestId` is included **only when relevant** — that is, on a replay of
+a `COMPLETED` record. It is absent on a first execution.
+
+Without both, a replay is indistinguishable from a fresh success in logs, which
+makes duplicate investigation guesswork.
+
+**CURRENT:** no request ID is exposed in any response today.
 
 ## Error envelope
 
@@ -333,6 +384,90 @@ The redaction rule is unchanged and non-negotiable: `error` is a fixed string
 selected by failure kind. Underlying messages, stacks, provider errors,
 credentials, tokens, and request internals are never returned. Classification is
 by error **code**, never by matching message text.
+
+## HTTP error contract — PROPOSED
+
+Envelope is unchanged in shape; `requestId` is always present.
+
+```json
+{ "success": false, "error": "<fixed string>", "requestId": "req_..." }
+```
+
+| Condition | Status | `error` |
+|---|---|---|
+| Bad/absent bearer token | 401 | `Unauthorized` |
+| Malformed body, bad URL, unknown keys, bad `schemaVersion` | 400 | `Invalid request body` |
+| Unsupported `schemaVersion` value | 400 | `Unsupported schema version` |
+| Missing/over-length/invalid `Idempotency-Key` | 400 | `Invalid idempotency key` |
+| URL unparseable or non-http(s) | 400 | `Invalid recipe URL` |
+| Host not TikTok/Instagram/YouTube-with-adapter | 400 | `Unsupported platform` |
+| Submitted recipe fails canonical validation | 400 | `Invalid recipe` |
+| Same key, different request | 409 | `Idempotency key conflict` |
+| Same key, currently `IN_PROGRESS` | 409 | `Export already in progress` |
+| Same key, `AMBIGUOUS` | 409 | `Export outcome unknown` |
+| Request body exceeds the route limit | 413 | `Request body too large` |
+| Content type is not `application/json` | 415 | `Unsupported content type` |
+| Extraction produced nothing usable | 422 | `Recipe could not be extracted` |
+| AnyList failure or anything unexpected | 500 | `Recipe import failed` / `Recipe export failed` |
+| Unknown route | 404 | `Not found` |
+
+**CURRENT gap:** 413 and 415 are not produced today — an oversized body returns
+500 and a wrong content type returns 400. Verified against the running server.
+
+### Body limits — PROPOSED
+
+| Route | Limit |
+|---|---|
+| `POST /api/import` (existing one-shot) | 8 KB |
+| `POST /api/imports` | 8 KB |
+| `POST /api/exports/anylist` | 64 KB |
+
+Exports carry a full canonical Recipe, hence the larger allowance.
+
+## Minimum usable recipe — PROPOSED
+
+`POST /api/imports` succeeds only when the extracted recipe has **all** of:
+
+- a **non-blank title**
+- **at least one ingredient**
+- **at least one instruction**
+
+Otherwise it returns the existing safe extraction-failure result
+(`422 Recipe could not be extracted`).
+
+This is **deterministic and structural**. It is explicitly **not** a confidence
+threshold: QA established that current `confidence` does not correlate reliably
+enough with whether edits are required to gate acceptance on it (ADR-019).
+
+`confidence` and `warnings` remain extraction-time assessment (ADR-010). They do
+not participate in this decision, and a recipe carrying warnings is a normal,
+successful, exportable recipe.
+
+## Canonical input hardening — PROPOSED
+
+Applies to **untrusted inbound API data**. That is the security boundary; it is
+deliberately not a mandate to make every internal Zod object strict, which would
+cause churn for no safety gain.
+
+**A. Title.** Whitespace-only titles are rejected. `min(1)` alone admits `"   "`.
+
+**B. `source.url`.** Inbound consumer-API recipes accept **only** `http:` and
+`https:` schemes.
+
+**C. `TimeRange`.** Inbound accepts `{ minMinutes: n, maxMinutes: n }`, but
+rejects `maxMinutes < minMinutes`. The **preferred producer form** for an exact
+time remains `{ minMinutes: n, maxMinutes: null }`; our own extraction continues
+to emit that form.
+
+> **Contradiction flagged — see the report.** Accepting `maxMinutes === minMinutes`
+> means `buildNote()` in `src/anylist/mapping.ts` will render `"40–40 minutes"`,
+> because it treats any non-null `maxMinutes` as a range. Milestone 1.1 froze
+> "an exact time is never encoded as `min === max`" on the producer side; this
+> amendment makes that shape legal on the consumer side. A source fix is needed
+> in Wave 1. No source was changed here.
+
+**D. Unknown fields.** Consumer-facing API request bodies are **strict** —
+unknown keys are rejected, not ignored.
 
 ## Canonical platform values
 
@@ -401,8 +536,43 @@ Never logged: the `Authorization` header, `RECIPE_API_KEY`, AnyList credentials,
 the Anthropic key, full third-party error objects, or full recipe contents.
 Recipe **title** on success is acceptable and already logged today.
 
+`inputTokens` / `outputTokens` **may remain `null` initially**, because
+`parseRecipe()` does not expose Anthropic usage. Parser contracts are **not**
+being changed solely for telemetry during this amendment.
+
+**Structured logs are acceptable as the initial telemetry store.** No metrics
+backend is required for V1.
+
 `elapsedMs` and the phase split are the inputs to the deployment timeout
-decision and to the eventual confidence gate on expensive extraction.
+decision. They are **no longer** described as inputs to a confidence gate — see
+ADR-019.
+
+## AnyList error classification — PROPOSED
+
+`AnyListError` gains a `code`:
+
+```ts
+code: "login_failed" | "create_failed" | "verify_unreadable" | "verify_missing"
+```
+
+**The AnyList layer reports facts only.** It states what happened; it does not
+decide what that means for retry safety. Interpretation belongs to the
+application layer:
+
+| AnyList code | Application state | Why |
+|---|---|---|
+| `login_failed` | `FAILED_SAFE` | Authentication failed, so the write was never attempted. Positive evidence of no write. |
+| `create_failed` | `AMBIGUOUS` | The call was made. A thrown exception does not prove the write did not land. |
+| `verify_unreadable` | `AMBIGUOUS` | The write may have succeeded and only the read-back failed. |
+| `verify_missing` | `AMBIGUOUS` | Read-back found nothing, but eventual consistency cannot be ruled out. |
+
+**A `createRecipe` exception must not be classified as safely retryable** unless
+future evidence proves no write could have occurred. Only `login_failed`
+currently carries that evidence.
+
+This is stricter than it may look: three of the four codes are non-retryable.
+That is deliberate, and it follows directly from `deleteRecipe()` being
+unreliable — an unnecessary duplicate cannot be cleaned up (ADR-020, ADR-021).
 
 ## APPLIED — YouTube in the canonical enum, and the Platform boundary
 
