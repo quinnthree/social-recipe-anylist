@@ -1,3 +1,4 @@
+import { INSTAGRAM_DOMAIN, TIKTOK_DOMAIN, isWithinDomain } from "./hosts.js";
 import { instagramAdapter } from "./instagram.js";
 import { tiktokAdapter } from "./tiktok.js";
 import { ExtractionError, type Platform, type SocialAdapter, type SourceContent } from "./types.js";
@@ -16,14 +17,16 @@ const ADAPTERS: Record<Platform, SocialAdapter> = {
 };
 
 const PLATFORM_DOMAINS: ReadonlyArray<readonly [string, Platform]> = [
-  ["instagram.com", "instagram"],
-  ["tiktok.com", "tiktok"],
+  [INSTAGRAM_DOMAIN, "instagram"],
+  [TIKTOK_DOMAIN, "tiktok"],
 ];
 
 /**
  * Identifies the platform from the URL's hostname. Matching is done against the
  * parsed hostname rather than the raw string so that a URL merely *containing*
- * "tiktok.com" somewhere in its path or query cannot be misrouted.
+ * "tiktok.com" somewhere in its path or query cannot be misrouted. The rule
+ * itself lives in ./hosts.ts, because the Instagram adapter applies the same
+ * one to every redirect destination.
  */
 export function detectPlatform(url: string): Platform {
   let parsed: URL;
@@ -40,9 +43,8 @@ export function detectPlatform(url: string): Platform {
     );
   }
 
-  const hostname = parsed.hostname.toLowerCase();
   for (const [domain, platform] of PLATFORM_DOMAINS) {
-    if (hostname === domain || hostname.endsWith(`.${domain}`)) return platform;
+    if (isWithinDomain(parsed.hostname, domain)) return platform;
   }
 
   throw new ExtractionError(
