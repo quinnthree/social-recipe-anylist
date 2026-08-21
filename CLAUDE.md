@@ -154,10 +154,28 @@ Shortcut.
 
 ## Known Issues
 
-@anylist-napi/anylist-napi persists prepTime and cookTime as 0 (upstream bug).
-The mapping still sends minMinutes so a future upstream fix benefits us
-automatically, and every explicitly stated time is also written into the
-recipe note so the information is never lost.
+### prepTime / cookTime
+
+An earlier note in this file claimed these persist as 0. That is **not**
+supported by research. A recipe created with prepTime=15 and cookTime=40 was
+read back correctly via getRecipeById().
+
+The mapping sends minMinutes, and every explicitly stated time is also written
+into the recipe note. The note behaviour stays for now as **conservative
+compatibility behaviour** — it is information-preserving, harmless, and the only
+place a stated range survives at all, since AnyList holds a single integer. It is
+not retained because a zero-persistence bug is currently proven.
+
+### Recipe identifiers
+
+The recipe ID is generated **client-side** by the library/protocol. It is not
+server-assigned, so createRecipe() returning an ID is **not** proof of
+persistence.
+
+Persistence is proven only by the post-save getRecipeById() verification, which
+is why that step is mandatory and why success is never reported without it.
+
+### Dependency
 
 The package ships a prebuilt native binary and has one published version
 from a single maintainer. It has no runtime JS dependencies and no known

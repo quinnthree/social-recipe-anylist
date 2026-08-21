@@ -247,13 +247,12 @@ that exists.
 3. **There is no persistence.** No database, no job queue, no server-side
    recipe identity. This is deliberate and it constrains what
    `Idempotency-Key` can mean (see `contracts.md`).
-4. **`src/anylist/client.ts` still describes the recipe id as "server-assigned"**
-   in a comment, and two test names repeat it. Research disproved this. The
-   wording is a Wave 1 correction; no production source was changed by this
-   amendment.
-5. **`CLAUDE.md` still states the `prepTime`/`cookTime` zero-persistence claim**
-   that research disproved. It was outside the list of documents to update in
-   this amendment and is flagged rather than changed.
+4. **Corrected 2026-08-21.** `src/anylist/client.ts` comments, the affected test
+   descriptions, and `CLAUDE.md` no longer claim server-assigned ids or a
+   zero-persistence bug. Comments and test names only; no behaviour changed.
+   `getRecipeById` is also now documented accurately: the protocol exposes a
+   single read endpoint (`data/user-data/get`), so the library fetches the whole
+   user-data blob and filters client-side — it is targeted in API shape only.
 6. **`413` and `415` are not returned today.** An oversized body currently
    yields `500` and a wrong content type yields `400`, because the error handler
    maps every non-400 status to 500. The approved contract requires distinct

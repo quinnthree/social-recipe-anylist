@@ -91,8 +91,11 @@ contracts for telemetry (`inputTokens`/`outputTokens` may stay `null`).
 inbound `{40, 40}` becomes `"40–40 minutes"`. Accepting that shape without
 fixing the renderer produces wrong output.
 
-**Stale comment to correct:** `src/anylist/client.ts` describes the recipe id as
-"server-assigned"; research disproved this (ADR-021).
+**Already corrected (2026-08-21):** the "server-assigned" wording in
+`src/anylist/client.ts` and the affected test descriptions, plus the stale
+`CLAUDE.md` claims. Comments and names only. Note that `getRecipeById` loads the
+full user-data blob and filters client-side, so verification is not a cheap
+targeted read — relevant if export latency becomes a concern.
 
 ### 2. AnyList production research — round 2
 
