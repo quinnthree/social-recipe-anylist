@@ -123,26 +123,56 @@ export const UNRESOLVED_CONTRACT_QUESTIONS: readonly ContractGap[] = [
   {
     id: "QA-021",
     question:
-      "24-hour retention and 'a stale IN_PROGRESS must not automatically become retryable; " +
-      "expiry is not evidence of safety' pull against each other. Within the window the rule " +
-      "holds. At the TTL boundary the record is deleted, so the same key with the same " +
-      "fingerprint is claimable again and a retry WILL write a second time — which is exactly " +
-      "becoming retryable by ageing, at a coarser granularity.",
+      "A flat 24-hour retention contradicted 'a stale IN_PROGRESS must not automatically become " +
+      "retryable; expiry is not evidence of safety'. At the TTL boundary the record would be " +
+      "deleted, the key would read as unseen, and a retry would write a second time — becoming " +
+      "retryable by ageing, at a coarser granularity.",
     blocks:
       "Asserting what a same-key export does 24 hours after an IN_PROGRESS or AMBIGUOUS " +
       "record was written.",
     severity: "blocks-backend",
-    resolved: false,
-    resolution: null,
+    resolved: true,
+    resolution:
+      "ADR-025 makes retention state-dependent: COMPLETED and FAILED_SAFE keep 24 hours, " +
+      "IN_PROGRESS and AMBIGUOUS keep 30 days, and a stale lease transitions the record to " +
+      "AMBIGUOUS rather than deleting it. Asserted against the real store in " +
+      "idempotency-contract.test.ts.",
   },
   {
     id: "QA-022",
     question:
       "'Every response carries X-Request-Id, with no exceptions' read literally includes " +
-      "GET /health, which returns no envelope and is the unauthenticated liveness probe. " +
-      "Whether it is exempt is not stated.",
+      "GET /health, which returns no envelope and is the unauthenticated liveness probe.",
     blocks: "Asserting X-Request-Id on GET /health without guessing.",
     severity: "documentation",
+    resolved: true,
+    resolution:
+      "Implemented literally: an onSend hook sets the header on every response, /health and " +
+      "404s included. Asserted in tests/http/current-api.test.ts.",
+  },
+  {
+    id: "QA-026",
+    question:
+      "The contract says requestId appears in the JSON envelope 'wherever an envelope is " +
+      "returned', with no exceptions. The implementation puts it in the envelope only on the " +
+      "two production routes: POST /api/import and the not-found handler keep their Part 1 " +
+      "bodies byte-for-byte, on the stated grounds that Part 1 is frozen and the CLI depends " +
+      "on it. Both still carry the X-Request-Id header. Defensible, and not what the sentence " +
+      "says.",
+    blocks: "Asserting requestId in the envelope of a POST /api/import or 404 response.",
+    severity: "documentation",
+    resolved: false,
+    resolution: null,
+  },
+  {
+    id: "QA-025",
+    question:
+      "isUsableRecipe trims the title but applies a bare length check to ingredients and " +
+      "instructions, so a recipe whose only instruction is \"   \" counts as usable and reaches " +
+      "the AnyList write. Literally conformant with ADR-019 — \"   \" is one instruction — but " +
+      "not what 'can a person actually cook from this' means. Same root weakness as QA-023.",
+    blocks: "Asserting that a blank-only instruction or ingredient name is rejected.",
+    severity: "blocks-backend",
     resolved: false,
     resolution: null,
   },

@@ -537,47 +537,28 @@ const INSTAGRAM_LOGIN_WALL: GoldenFixture = {
 const INSTAGRAM_LOGIN_BLURB: GoldenFixture = {
   id: "instagram-login-blurb",
   summary:
-    "Instagram served a login page that DOES carry a generic og:description. Ingestion does not reject it.",
+    "Instagram served a login page that DOES carry a generic og:description. Rejected as an interstitial.",
   quality: "FAIL_EXPECTED",
   url: "https://www.instagram.com/reel/CqLoginBlurb/",
   recordedSource: { kind: "instagram-html", status: 200, file: "instagram-login-blurb.html" },
-  expectedSourceContent: {
-    platform: "instagram",
-    url: "https://www.instagram.com/reel/CqLoginBlurb/",
-    creator: null,
-    text:
-      "Welcome back to Instagram. Sign in to check out what your friends, family & interests " +
-      "have been capturing & sharing around the world.",
-    textSource: "og-description",
+  expectedSourceContent: null,
+  expectedExtraction: null,
+  expectedAssessment: null,
+  expectedFailure: {
+    extractionCode: "source_unavailable",
+    importKind: "extraction_failed",
+    httpStatus: 422,
+    httpError: "Recipe could not be extracted",
   },
-  expectedExtraction: {
-    title: "Instagram Login Page",
-    description: null,
-    servings: null,
-    prepTime: null,
-    cookTime: null,
-    ingredients: [],
-    instructions: [],
-  },
-  expectedAssessment: {
-    confidence: 0.1,
-    warnings: [
-      "No ingredients were found in the source text.",
-      "No instructions were found in the source text.",
-      "No servings were stated in the source text.",
-      "No prep or cook time was stated in the source text.",
-      "Recipe was extracted from Open Graph metadata, which is often a truncated version of the caption.",
-      "The source creator could not be determined.",
-    ],
-  },
-  expectedFailure: null,
   notes:
-    "Classified FAIL_EXPECTED because the user must not get a recipe — but the pipeline does " +
-    "not fail. The adapter accepts the login blurb as a caption, the model is called and paid " +
-    "for, and the result is an empty recipe at confidence 0.1 that the API returns as 200 and " +
-    "writes to AnyList. Nothing anywhere applies a confidence floor. This is the gap between " +
-    "'fails cleanly behind a login wall' as documented and what happens when the login page " +
-    "carries a description. See docs/qa/findings.md QA-002 and QA-003.",
+    "QA-002, RESOLVED 2026-08-21. This fixture used to extract: the adapter's only test for a " +
+    "login wall was an empty og:description, so a sign-in blurb was accepted as a caption, sent " +
+    "to Claude, and — before the acceptance gate moved to the import-service boundary — written " +
+    "to AnyList as an empty recipe at confidence 0.1. The hardened adapter now rejects it on " +
+    "three independent deterministic signals; this one trips the og:title rule, because " +
+    '"Login • Instagram" is a page title only a non-post page has. Detection happens before any ' +
+    "model call, so a blocked post costs one HTTP request and nothing else. The companion " +
+    "fixture instagram-login-wall covers the empty-description case that always failed cleanly.",
 };
 
 const YOUTUBE_NOT_INGESTIBLE: GoldenFixture = {

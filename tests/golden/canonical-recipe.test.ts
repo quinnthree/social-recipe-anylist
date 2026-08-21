@@ -151,13 +151,21 @@ describe("the AnyList export adapter, over the golden corpus", () => {
     expect(salt).toEqual({ name: "flaky sea salt" });
   });
 
-  it("would happily export the login-page blurb as a recipe", () => {
-    // Documents current behaviour, and why a confidence floor matters: an empty
-    // recipe at confidence 0.1 maps to a perfectly well-formed AnyList payload.
-    const mapped = toAnyListRecipe(recipeFor("instagram-login-blurb"));
+  it("has no login-page blurb left to export", () => {
+    // QA-002/QA-003 RESOLVED. The blurb used to map to a well-formed AnyList
+    // payload with an empty ingredient list. It is now rejected at ingestion,
+    // so it never becomes a canonical Recipe and there is nothing to map.
+    expect(expectedRecipe(fixture("instagram-login-blurb"))).toBeNull();
+  });
 
-    expect(mapped.name).toBe("Instagram Login Page");
-    expect(mapped.ingredients).toEqual([]);
-    expect(mapped.preparationSteps).toEqual([]);
+  it("maps no corpus recipe to an empty AnyList payload", () => {
+    // The acceptance gate now lives at the import-service boundary, so an
+    // extraction with no ingredients and no instructions never reaches export
+    // on any path — including the legacy one-shot route and the CLI.
+    for (const entry of EXTRACTING_FIXTURES) {
+      const mapped = toAnyListRecipe(requireRecipe(entry));
+
+      expect(mapped.ingredients.length + mapped.preparationSteps.length).toBeGreaterThan(0);
+    }
   });
 });

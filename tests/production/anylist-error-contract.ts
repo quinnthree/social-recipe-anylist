@@ -1,4 +1,5 @@
-import type { IdempotencyState } from "./idempotency-contract.js";
+import type { ExportOutcome } from "../../src/app/export-service.js";
+import type { ClaimStatus } from "./idempotency-contract.js";
 
 /**
  * The approved AnyList error classification (contracts.md "AnyList error
@@ -33,7 +34,7 @@ export const ANYLIST_ERROR_CODES: readonly AnyListErrorCode[] = [
  * decides what that implies for retry safety, because retry safety is a
  * property of the external side effect, not of the exception (ADR-020).
  */
-export const CODE_TO_STATE: Record<AnyListErrorCode, Extract<IdempotencyState, "FAILED_SAFE" | "AMBIGUOUS">> = {
+export const CODE_TO_STATE: Record<AnyListErrorCode, ExportOutcome> = {
   // The only code carrying positive evidence that no write was attempted.
   login_failed: "FAILED_SAFE",
   // A thrown exception does not prove the write did not land.
@@ -52,3 +53,15 @@ export const SCENARIO_TO_CODE = {
   verifyReturnsNull: "verify_missing",
   verifyReturnsOtherId: "verify_missing",
 } as const satisfies Record<string, AnyListErrorCode>;
+
+/**
+ * What a recorded outcome means for the *next* claim on the same key.
+ *
+ * The store collapses `FAILED_SAFE` into `claimed`, because a re-claim is the
+ * `FAILED_SAFE → IN_PROGRESS` transition. `AMBIGUOUS` stays itself, and is the
+ * one outcome that never becomes claimable again.
+ */
+export const OUTCOME_TO_CLAIM_STATUS: Record<ExportOutcome, ClaimStatus> = {
+  FAILED_SAFE: "claimed",
+  AMBIGUOUS: "ambiguous",
+};

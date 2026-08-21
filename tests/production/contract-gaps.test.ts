@@ -39,10 +39,10 @@ describe("the contract-gap register", () => {
     }
   });
 
-  it("holds the recorded counts after the production contract landed", () => {
-    // Six of the eight original questions were answered. Changing these numbers
-    // is a deliberate act: it means the contract moved.
-    expect(RESOLVED_QUESTIONS).toHaveLength(6);
+  it("holds the recorded counts after milestone 4 integration", () => {
+    // Eight of thirteen answered: six by the approved contract, and QA-021 and
+    // QA-022 by the implementation. Changing these numbers is a deliberate act.
+    expect(RESOLVED_QUESTIONS).toHaveLength(8);
     expect(OPEN_QUESTIONS).toHaveLength(5);
   });
 
@@ -52,14 +52,14 @@ describe("the contract-gap register", () => {
     expect(blockingIos.map((entry) => entry.id)).toEqual(["QA-013"]);
   });
 
-  it.each(["QA-011", "QA-012", "QA-014", "QA-015", "QA-016", "QA-017"])(
-    "%s is resolved by the approved contract",
+  it.each(["QA-011", "QA-012", "QA-014", "QA-015", "QA-016", "QA-017", "QA-021", "QA-022"])(
+    "%s is resolved",
     (id) => {
       expect(gap(id).resolved).toBe(true);
     },
   );
 
-  it.each(["QA-013", "QA-018", "QA-021", "QA-022", "QA-023"])("%s is still open", (id) => {
+  it.each(["QA-013", "QA-018", "QA-023", "QA-025", "QA-026"])("%s is still open", (id) => {
     expect(gap(id).resolved).toBe(false);
   });
 });

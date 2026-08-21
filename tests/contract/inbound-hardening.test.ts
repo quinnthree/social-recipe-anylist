@@ -124,18 +124,6 @@ describe("exact-time mapping", () => {
     );
   });
 
-  it("DEFECT QA-020: renders { n, n } as the range \"40–40 minutes\"", () => {
-    // The contradiction ADR-024 flagged and asked QA to confirm. `describeTime`
-    // treats any non-null maxMinutes as a range, so the newly-legal inbound
-    // shape { 40, 40 } produces "40–40 minutes" in the AnyList note.
-    //
-    // Locked as current behaviour. The required behaviour is the skipped spec
-    // below. No production source was changed.
-    expect(buildNote(withCookTime({ minMinutes: 40, maxMinutes: 40 }))).toBe(
-      "Cook time stated in source: 40–40 minutes",
-    );
-  });
-
   it("sends the same numeric cookTime for all three shapes", () => {
     // Only the note is wrong; the numeric field is the lower bound either way,
     // which for { n, n } is correct. The defect is presentational and reaches
@@ -146,17 +134,6 @@ describe("exact-time mapping", () => {
     ] as const) {
       expect(toAnyListRecipe(withCookTime(cookTime)).cookTime).toBe(40);
     }
-  });
-
-  it("shows the same defect on prepTime", () => {
-    const recipe: Recipe = {
-      ...VALID_INBOUND_RECIPE,
-      description: null,
-      prepTime: { minMinutes: 15, maxMinutes: 15 },
-      cookTime: null,
-    };
-
-    expect(buildNote(recipe)).toBe("Prep time stated in source: 15–15 minutes");
   });
 
   it("our own extraction never produces the offending shape", () => {
@@ -171,10 +148,10 @@ describe("exact-time mapping", () => {
 });
 
 /**
- * ENABLE when `describeTime` in src/anylist/mapping.ts is corrected. Change
- * `describe.skip` to `describe` and delete the DEFECT QA-020 locks above.
+ * QA-020 RESOLVED. `describeTime` now treats a range as `maxMinutes > minMinutes`,
+ * so the inbound-legal `{ n, n }` renders as an exact time. Activated 2026-08-21.
  */
-describe.skip("exact-time mapping — specification (ADR-024 resolution)", () => {
+describe("exact-time mapping — { n, n } is an exact time (ADR-024 resolution)", () => {
   const withCookTime = (cookTime: Recipe["cookTime"]): Recipe => ({
     ...VALID_INBOUND_RECIPE,
     description: null,

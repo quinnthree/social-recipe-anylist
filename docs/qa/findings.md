@@ -1,105 +1,86 @@
 # QA Findings
 
-Independent QA / regression, branch `test/production-regression`.
-Last updated: 2026-08-21, against the **final approved production contract**.
+Independent QA / regression, reconciled against the **milestone 4 integration**
+(main through `b87eb6c`, backend through `137c68c`).
+Last updated: 2026-08-21.
 
-Every finding below is reproduced by a test in this repository. None is fixed:
-production source is read-only for this workstream.
+Every finding is reproduced by a test in this repository, or recorded as
+resolved with the test that now proves the fix.
 
 Severity: **Defect** — wrong in code that ships today. **Gap** — becomes wrong
 when an approved-but-unbuilt contract is implemented. **Observation** — worth
-knowing, no action implied. **Resolved** — the approved contract settled it.
+knowing. **Resolved** — fixed in the integrated build or settled by contract.
 
-| ID | Severity | Summary |
+| ID | Status | Summary |
 |---|---|---|
-| QA-001 | Defect | Oversized body → `500`, unsupported media type → `500`; contract now requires `413` / `415` |
-| QA-002 | Defect | An Instagram interstitial carrying *any* `og:description` is extracted, not rejected |
-| QA-003 | Defect (partly resolved) | No usability gate on `POST /api/import` or the CLI: an empty recipe is saved and reported as success |
+| QA-001 | **Resolved** | `413 Request body too large` and `415 Unsupported content type` are now returned |
+| QA-002 | **Resolved** | Instagram interstitials are rejected before any model call |
+| QA-003 | **Resolved** | The usability gate moved to the shared import-service boundary, covering the legacy route and the CLI |
 | QA-004 | Resolved | `TimeRange` cross-field validation — settled by ADR-024 |
-| QA-005 | Gap | The canonical Ingredient cannot express "optional" |
-| QA-006 | Resolved | Unknown-key strictness — scoped to the boundary by ADR-024 |
-| QA-007 | Resolved (partly) | Whitespace-only `title` — hardened inbound; other strings are not (QA-023) |
-| QA-008 | Resolved | `source.url` scheme — restricted to http(s) inbound by ADR-024 |
-| QA-009 | Gap | `AnyListError` carries no `code`, so `FAILED_SAFE` and `AMBIGUOUS` cannot be told apart |
-| QA-010 | Observation | Log redaction cannot be asserted in-process |
-| QA-020 | Defect (new) | `{ n, n }` renders as `"40–40 minutes"` in the AnyList note |
-| QA-021 | Gap (new) | 24-hour retention contradicts "a stale `IN_PROGRESS` must not become retryable" |
-| QA-022 | Observation (new) | "`X-Request-Id` on every response, no exceptions" vs `GET /health` |
-| QA-023 | Gap (new) | Only `title` is hardened against whitespace; every other string shares the weakness |
-| QA-024 | Observation (new) | Native stderr leaks `set-cookie` on failed AnyList login — outside our redaction boundary |
+| QA-005 | Gap | The canonical Ingredient still cannot express "optional" |
+| QA-006 | Resolved | Unknown-key strictness — scoped to the boundary by ADR-024, enforced inbound |
+| QA-007 | Resolved (partly) | Whitespace-only `title` hardened inbound; other strings are not (QA-023) |
+| QA-008 | Resolved | `source.url` restricted to http(s) inbound |
+| QA-009 | **Resolved** | `AnyListError` carries a typed `code`; only `login_failed` is retryable |
+| QA-010 | Resolved | `logDestination` is injectable, so redaction is asserted in-process |
+| QA-020 | **Resolved** | `{ n, n }` renders as an exact time, not `"40–40 minutes"` |
+| QA-021 | **Resolved** | Retention is state-dependent (ADR-025); uncertainty outlives settled state |
+| QA-022 | **Resolved** | `X-Request-Id` is set on every response, `/health` and 404s included |
+| QA-023 | Gap | Only `title` is hardened against whitespace; every other string shares the weakness |
+| QA-024 | Observation | Native stderr leaks `set-cookie` on failed AnyList login — outside our redaction boundary |
+| QA-025 | **Defect (new, minor)** | `isUsableRecipe` trims the title but counts blank ingredients and instructions |
+| QA-026 | Observation (new) | `requestId` is in the envelope only on production routes, not "wherever an envelope is returned" |
+| QA-027 | Observation (new) | Unauthenticated callers can distinguish a registered route (401) from an unregistered one (404) |
 
 ---
 
-## QA-001 — Client errors are reported as server errors
+## QA-001 — RESOLVED: client errors now report as client errors
 
-**Severity:** Defect. **Reproduced by:** `tests/http/current-api.test.ts`,
-"QA-001: reports a body over the 8 KB limit as a 500, not the approved 413" and
-"QA-001: reports the unsupported media type %s as a 500, not the approved 415".
+**Was:** the error handler mapped anything that was not exactly `400` to `500`,
+so an oversized body and an unsupported media type both came back as
+`500 Recipe import failed`.
 
-`src/http/server.ts:111` maps anything that is not exactly `400` to `500`:
+**Now:** `kindForFastifyCode` classifies on the Fastify error **code**, and the
+contract's `413 Request body too large` and `415 Unsupported content type` are
+returned on every route. The default `text/plain` parser is removed, so a wrong
+content type is an honest media-type refusal rather than a confusing complaint
+about the body.
 
-```ts
-await fail(reply, statusCode === 400 ? 400 : 500, safeTextFor(statusCode));
-```
+Verified in `tests/http/current-api.test.ts` and both endpoint specs, including
+per-route limits: 8 KB on the import routes, 64 KB on the export route.
 
-Fastify raises `FST_ERR_CTP_BODY_TOO_LARGE` with `statusCode: 413` and
-`FST_ERR_CTP_INVALID_MEDIA_TYPE` with `415`. Both collapse to
-`500 Recipe import failed`, logged at error level.
+## QA-002 — RESOLVED: interstitials are rejected before the model call
 
-Verified: `application/xml`, `application/x-www-form-urlencoded`, and
-`application/octet-stream` all return `500`. `text/plain` does not — Fastify has
-a default parser for it, so it reaches the Zod schema and correctly returns
-`400`.
+**Was:** the adapter's only test for a login wall was an empty `og:description`,
+so any interstitial carrying description text was sent to Claude as a caption.
 
-**Now an approved contract divergence, not just a judgement call.** The contract
-requires `413 Request body too large` and `415 Unsupported content type`, and
-sets per-route body limits (8 KB for both import routes, 64 KB for the export
-route). Specification in the `describe.skip` block at the foot of the same file.
+**Now:** `interstitialReason` checks three independent deterministic signals —
+a path that is never a post, an `og:title` only a non-post page produces, and
+description metadata matching Instagram's own boilerplate — before any text is
+read as a caption. The `instagram-login-blurb` fixture is now a FAIL fixture:
+it is refused after exactly one HTTP request and no model call.
 
-## QA-002 — An Instagram interstitial with a description is extracted
+The false-positive guard matters as much as the detection, and is asserted: a
+real post with a genuine caption still extracts.
 
-**Severity:** Defect. **Reproduced by:** the `instagram-login-blurb` fixture and
-`tests/social/instagram-hardening.test.ts`.
+## QA-003 — RESOLVED, and better than proposed
 
-The adapter's entire test for a login wall is whether `captionFrom` returns null
-(`src/social/instagram.ts:48`). Any interstitial carrying description text — a
-sign-in blurb, an age gate, a region notice — passes, and its boilerplate is
-sent to Claude as if it were a caption.
+**Was:** ADR-019's minimum usable recipe gated `POST /api/imports` only. That
+endpoint did not exist, and the route that actually shipped — `POST /api/import`,
+plus the CLI — had no gate at all, so an empty recipe was written to AnyList and
+reported as `success: true`.
 
-The approved hardening names this directly: "never pass arbitrary interstitial
-description text to the recipe model as though it were a creator caption". Not
-implemented.
+**Now:** the gate lives at the shared **import-service boundary**, not in a
+route handler, so it covers `/api/imports`, the legacy `/api/import`, and the
+CLI alike. That is the stronger fix: the legacy path is the one that writes to
+AnyList, so it was the wrong one to hold to a weaker standard.
 
-Costs: a paid model call for text knowably not a recipe, and (via QA-003) a junk
-recipe in the user's AnyList account.
+Verified in `tests/failure-modes/pipeline-failures.test.ts`: an extraction with
+no ingredients, no instructions, or a blank title is `extraction_failed`, and
+the AnyList saver is never constructed. Confidence still takes no part in the
+decision — a 0.1-confidence recipe that meets the minimum exports normally.
 
-The clean-failure case — a login wall with no usable description — works exactly
-as documented and is fixture `instagram-login-wall`.
-
-## QA-003 — No usability gate on the endpoint that ships today
-
-**Severity:** Defect, partly resolved. **Reproduced by:**
-`tests/http/current-api.test.ts`, "the minimum-usable-recipe gate does not cover
-this endpoint".
-
-ADR-019 introduced the minimum usable recipe — non-blank title, ≥1 ingredient,
-≥1 instruction — and applied it to **`POST /api/imports` only**. That endpoint
-does not exist yet.
-
-`POST /api/import` is unversioned, explicitly remains in the contract for CLI
-and internal use, and received **no gate**. So on the route that actually ships:
-
-```json
-{"success":true,"recipe":{"title":"Instagram Login Page","confidence":0.1,"warnings":[…6…]},"saved":{"id":"…"}}
-```
-
-`success: true`, confidence 0.1, six warnings, an empty recipe written to
-AnyList — and, because `deleteRecipe()` is unreliable (ADR-021), not removable
-programmatically. The same applies to `npm run import`.
-
-Applying the structural minimum to `POST /api/import` and the CLI is a small,
-already-approved rule reaching one more call site. It needs oversight sign-off
-because it adds a failure mode to a Part 1 contract.
+See QA-025 for the one edge the gate does not cover.
 
 ## QA-004 — RESOLVED
 
@@ -138,103 +119,69 @@ ADR-024 B restricts inbound `source.url` to `http:` and `https:`. Asserted in
 the inbound suite; the producer schema stays permissive, which is safe because
 `detectPlatform` rejects non-http schemes on the extraction path.
 
-## QA-009 — `AnyListError` carries no code
+## QA-009 — RESOLVED: AnyList errors are typed
 
-**Severity:** Gap. **Reproduced by:**
-`tests/production/anylist-error-contract.test.ts`, "AnyListError — not yet
-typed".
+**Was:** every AnyList failure became the same untyped `AnyListError`, so
+`login_failed` and `create_failed` were indistinguishable — and the error
+envelope forbids classifying on message text. This blocked the idempotency
+state machine.
 
-ADR-020 specifies `code: "login_failed" | "create_failed" | "verify_unreadable"
-| "verify_missing"`, and the application mapping `login_failed → FAILED_SAFE`,
-all three others → `AMBIGUOUS`.
+**Now:** `AnyListError` carries
+`code: "login_failed" | "create_failed" | "verify_unreadable" | "verify_missing"`,
+and the application maps it (ADR-020): `login_failed → FAILED_SAFE`, the other
+three → `AMBIGUOUS`. The adapter reports facts; the application decides retry
+safety.
 
-Not implemented. Every failure still becomes the same `AnyListError` with a
-fixed message and no code, so login failure and create failure are
-indistinguishable — and the error envelope forbids classifying on message text.
+Verified end to end in `tests/production/anylist-error-contract.test.ts`: each
+scenario produces its code, a `createRecipe` timeout is `create_failed` and
+nothing safer, and exactly one code can reach `createRecipe` again.
 
-This is the **one prerequisite the backend cannot work around**: without it the
-idempotency state machine cannot record the right state, and `FAILED_SAFE` —
-the only retryable state — cannot be identified. It is a change to
-`src/anylist/`, owned by the AnyList research workstream.
+## QA-010 — RESOLVED: redaction is assertable in-process
 
-The mapping table itself is asserted today (it is a contract, not code), and the
-scenario→code specs are written and skipped.
+`ServerDeps.logDestination` is now injectable, so the real Pino output can be
+captured and asserted without a child process. The subprocess capture in
+`tests/http/logging-redaction.test.ts` still runs as an independent check of
+what the deployed configuration actually writes, which is a slightly different
+claim and worth keeping.
 
-## QA-010 — Log redaction cannot be asserted in-process
+The redaction path list also widened: `authorization`, `cookie`, `x-api-key`,
+`idempotency-key`, and `*.password` / `*.token` / `*.accessToken` /
+`*.refreshToken` / `*.apiKey`.
 
-**Severity:** Observation. **Worked around by:**
-`tests/http/logging-redaction.test.ts` and `tests/support/log-capture.child.ts`.
+**Bounded by QA-024**, which no in-process assertion can reach.
 
-`ServerDeps.logger` is `boolean`, and pino writes to fd 1 via `sonic-boom`,
-bypassing `process.stdout.write`. The workaround runs the real server in a child
-process driven by `app.inject()` — no port opened — and reads its stdout. Full
-coverage; about 2 seconds per run. Widening `logger` to accept a stream would
-make it a normal assertion, but is not needed.
+## QA-020 — RESOLVED: `{ n, n }` renders as an exact time
 
-## QA-020 — `{ n, n }` renders as a range in the AnyList note
+**Was:** `describeTime` treated any non-null `maxMinutes` as a range, so the
+inbound-legal `{ minMinutes: 40, maxMinutes: 40 }` produced
+`"Cook time stated in source: 40–40 minutes"` in the user's AnyList recipe.
 
-**Severity:** Defect (newly exposed). **Reproduced by:**
-`tests/contract/inbound-hardening.test.ts`, "DEFECT QA-020: renders { n, n } as
-the range \"40–40 minutes\"".
+**Now:** a range is `maxMinutes > minMinutes`, so `{ 40, 40 }` and
+`{ 40, null }` render identically. The user cannot tell which encoding their
+client happened to send.
 
-ADR-024 flagged this and asked QA to confirm it. Confirmed.
+Verified in `tests/contract/inbound-hardening.test.ts` and asserted through the
+export endpoint.
 
-`describeTime` in `src/anylist/mapping.ts:58` treats any non-null `maxMinutes`
-as a range:
+## QA-021 — RESOLVED: retention is state-dependent
 
-```ts
-return time.maxMinutes === null
-  ? `${time.minMinutes} minutes`
-  : `${time.minMinutes}${EN_DASH}${time.maxMinutes} minutes`;
-```
+**Was:** a flat 24-hour retention contradicted "a stale `IN_PROGRESS` must not
+become retryable by ageing". At the TTL boundary the record would be deleted,
+the key would read as unseen, and a retry would write a second time.
 
-So the newly-legal inbound shape `{ minMinutes: 40, maxMinutes: 40 }` produces
-`"Cook time stated in source: 40–40 minutes"` in the user's AnyList recipe. Same
-for `prepTime`.
+**Now:** ADR-025 splits retention by state — `COMPLETED` and `FAILED_SAFE` keep
+24 hours, `IN_PROGRESS` and `AMBIGUOUS` keep 30 days — and a stale lease
+transitions the record to `AMBIGUOUS` rather than deleting it. TTL is not a
+lease, and uncertainty is preserved rather than erased.
 
-Scope: presentational, and reachable only through the inbound export path — our
-own extraction still emits `{ n, null }` for an exact time, so nothing today can
-produce it. It becomes reachable the moment `POST /api/exports/anylist` ships.
-The numeric `cookTime` field is unaffected: it is the lower bound, which for
-`{n, n}` is correct.
+Verified against the real store in
+`tests/production/idempotency-contract.test.ts`.
 
-Fix: `maxMinutes === null || maxMinutes === minMinutes` selects the exact form.
-One line in `describeTime`. **Must land with, or before, the export endpoint.**
-Specification is the skipped block in the same file.
+## QA-022 — RESOLVED: the header really is on every response
 
-## QA-021 — Retention contradicts the stale-`IN_PROGRESS` rule
-
-**Severity:** Gap. **Recorded in:** `tests/production/contract-gaps.ts`;
-retention behaviour asserted in the conformance suite.
-
-Two approved rules pull against each other:
-
-- ADR-017: retention is **24 hours**.
-- ADR-012 as amended: "a stale `IN_PROGRESS` record does not become retryable by
-  ageing… Expiry is not evidence of safety."
-
-Within the window the second rule holds and the conformance suite asserts it: a
-stale `IN_PROGRESS` becomes `AMBIGUOUS` and is never re-claimed.
-
-At the TTL boundary the record is deleted. The same key with the same
-fingerprint is then `NEW`, is claimed, and the export **is** retried — which is
-precisely becoming retryable by ageing, at a coarser granularity. A client that
-retries a 409 `Export outcome unknown` once a day gets a second write on day two.
-
-This is not necessarily wrong; 24 hours may be the accepted bound on the
-guarantee. But it is not stated, and "expiry is not evidence of safety" reads as
-though it were absolute. Either the rule needs "within the retention window", or
-`AMBIGUOUS` and `IN_PROGRESS` records need retention beyond 24 hours.
-
-No test asserts past-24-hour behaviour for those two states, deliberately.
-
-## QA-022 — `X-Request-Id` on every response vs `GET /health`
-
-**Severity:** Observation. "Every response carries a request ID — 200, 400, 401,
-404, 409, 413, 415, 422, and 500 alike, with no exceptions" read literally
-includes `GET /health`, which returns no envelope and is the unauthenticated
-liveness probe. The specification asserts the header there on the literal
-reading, flagged in place. Cheap to confirm either way.
+An `onSend` hook sets `X-Request-Id` on every response, including `GET /health`
+and 404s. The literal reading was implemented. See QA-026 for the envelope,
+which is a narrower claim.
 
 ## QA-023 — Only `title` is hardened against whitespace
 
@@ -270,6 +217,72 @@ cannot.
 Added to the release gate as a LIVE EXTERNAL check. The Milestone 2 migration
 removed the console-interception shim, so there is currently no JavaScript-side
 interception of native output at all.
+
+## QA-025 — `isUsableRecipe` counts blank ingredients and instructions
+
+**Severity:** Defect, minor and newly exposed. **Reproduced by:**
+`tests/failure-modes/pipeline-failures.test.ts`, the two `QA-025` tests.
+
+`isUsableRecipe` applies `.trim()` to the title and a bare `.length > 0` to the
+two arrays:
+
+```ts
+recipe.title.trim().length > 0 &&
+recipe.ingredients.length > 0 &&
+recipe.instructions.length > 0
+```
+
+So a recipe whose only instruction is `"   "`, or whose only ingredient is named
+`"   "`, counts as usable and reaches the AnyList write.
+
+Literally conformant with ADR-019 — "at least one instruction", and `"   "` is
+one — but not what "can a person actually cook from this" means. That the title
+*is* trimmed is what makes the other two look like an oversight rather than a
+decision.
+
+Low reachability: the model is prompted for real instructions, and the inbound
+export path does not use this gate. Not deployment-blocking. The fix is two
+`.some(…trim().length > 0)` checks, and it is a contract decision rather than a
+QA one, because it narrows what ADR-019 admits.
+
+Same root weakness as QA-023.
+
+## QA-026 — `requestId` is in the envelope only on production routes
+
+**Severity:** Observation. **Recorded in:** `tests/http/current-api.test.ts`,
+"leaves requestId out of the frozen Part 1 envelopes".
+
+The contract says `requestId` appears in the JSON envelope "wherever an envelope
+is returned", with no exceptions. The implementation puts it in the envelope on
+`/api/imports` and `/api/exports/anylist` only; `POST /api/import` and the
+not-found handler keep their Part 1 bodies byte-for-byte, on the stated grounds
+that Part 1 is frozen and the CLI depends on it.
+
+Both still carry the `X-Request-Id` header, so nothing is un-correlatable.
+
+This is a defensible reading of two rules that genuinely conflict — "Part 1 is
+frozen" against "every envelope carries requestId" — and the choice is
+documented in the source. It needs a one-line ruling in `contracts.md`, not a
+code change. Flagged rather than asserted either way.
+
+## QA-027 — Registered and unregistered routes are distinguishable unauthenticated
+
+**Severity:** Observation. **Recorded in:** `tests/http/current-api.test.ts`,
+"answers 404, not 401, for a path no route is registered at".
+
+Authentication is now applied over *registered* routes: an unmatched path falls
+to the not-found handler and answers `404 Not found` without an auth check,
+which is what keeps Part 1's frozen 404 behaviour intact. The previous
+implementation checked the `/api/` prefix and answered `401` for everything
+under it.
+
+Consequence: an unauthenticated caller can tell a registered route (`401`) from
+an unregistered one (`404`). The route set is public in `contracts.md`, so this
+discloses nothing secret, and the allowlist design it comes from is a genuine
+improvement — `PUBLIC_PATHS` makes authentication deny-by-default rather than
+dependent on where a route happens to be mounted.
+
+Recorded so the trade is visible, not as a finding to fix.
 
 ---
 

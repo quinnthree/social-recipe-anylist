@@ -1,7 +1,10 @@
 # QA Release Gate
 
-The checklist to run before the production backend is released. Updated
-2026-08-21 for the final approved production contract.
+The checklist to run before the production backend is released. Reconciled
+2026-08-21 against the milestone 4 integration.
+
+**Status: every AUTOMATED item is green.** What remains is MANUAL and
+LIVE EXTERNAL — see "What is still unverified" at the foot of this document.
 
 Three kinds of check, and they are not interchangeable:
 
@@ -31,7 +34,7 @@ anyway" is a decision for oversight, recorded in `findings.md` — not a QA call
 | A8 | Every unresolved contract question is closed or explicitly deferred | MANUAL | `contract-gaps.ts`, 5 open |
 | A9 | Inbound hardening conformance passes against the real inbound schema | AUTOMATED once implemented | `runInboundRecipeConformance` |
 | A10 | The inbound schema is strictly narrower than the canonical one | AUTOMATED | `tests/contract/inbound-hardening.test.ts` |
-| A11 | `{n, n}` renders as an exact time, not `"n–n"` (QA-020) | AUTOMATED | **currently fails the intent** — locked as the defect |
+| A11 | `{n, n}` renders as an exact time, not `"n–n"` (QA-020) | AUTOMATED | ✅ `tests/contract/inbound-hardening.test.ts` |
 
 ## B. Extraction
 
@@ -62,7 +65,7 @@ things that can move it.
 | C5 | Save is verified server-side before success is reported | AUTOMATED | `src/anylist/client.test.ts` |
 | C6 | `createRecipe` called at most once on every failure path | AUTOMATED | `tests/failure-modes/pipeline-failures.test.ts` |
 | C7 | A recipe really appears in the AnyList mobile app, with times in the note | LIVE EXTERNAL | one real save |
-| C8 | `AnyListError` carries a typed `code`, and each scenario maps to the right one | AUTOMATED once implemented | `tests/production/anylist-error-contract.test.ts` |
+| C8 | `AnyListError` carries a typed `code`, and each scenario maps to the right one | AUTOMATED | ✅ `tests/production/anylist-error-contract.test.ts` |
 | C9 | Only `login_failed` is treated as retryable | AUTOMATED | same |
 | C10 | `prepTime`/`cookTime` persist correctly; RESEARCH-PROVEN, re-confirm | LIVE EXTERNAL | AnyList research workstream |
 | C11 | `deleteRecipe()` is still unreliable, so no rollback is designed (ADR-021) | MANUAL | ADR-021 |
@@ -73,7 +76,7 @@ Applies once `Idempotency-Key` is implemented on `POST /api/exports/anylist`.
 
 | # | Check | Kind | Where |
 |---|---|---|---|
-| D1 | The Upstash store passes the conformance suite | AUTOMATED | `runIdempotencyStoreConformance({ createStore, staleAfterMs })` |
+| D1 | The in-process store passes the conformance suite | AUTOMATED | ✅ `tests/production/idempotency-contract.test.ts` |
 | D2 | 20 concurrent same-key claims → exactly one winner | AUTOMATED | conformance suite |
 | D3 | 10 concurrent `FAILED_SAFE` re-claims → exactly one winner | AUTOMATED | conformance suite |
 | D4 | `mayCallCreateRecipe` true in exactly `NEW` and `FAILED_SAFE` | AUTOMATED | `idempotency-contract.test.ts` |
@@ -83,10 +86,10 @@ Applies once `Idempotency-Key` is implemented on `POST /api/exports/anylist`.
 | D8 | All three 409 strings distinct and correct | AUTOMATED | `idempotency-contract.test.ts` |
 | D9 | `originalRequestId` present on replay, absent on first execution | AUTOMATED once implemented | `exports-anylist-endpoint.test.ts` |
 | D10 | Key required, 1–128 chars, else `400 Invalid idempotency key` | AUTOMATED | both files |
-| D11 | `AnyListError.code` exists so states can be recorded correctly (QA-009) | AUTOMATED | **blocked** — gates D1 |
-| D12 | QA-021 resolved: what a same-key export does after 24 hours | MANUAL | contract decision |
+| D11 | `AnyListError.code` exists so states can be recorded correctly (QA-009) | AUTOMATED | ✅ resolved |
+| D12 | QA-021 resolved: state-dependent retention (ADR-025) | AUTOMATED | ✅ conformance suite |
 | D13 | The store survives a restart and is shared across instances | MANUAL | in-process maps are disqualified (ADR-012) |
-| D14 | Concurrency holds against real Upstash, not just one process | LIVE EXTERNAL | two concurrent same-key exports |
+| D14 | The **Redis** store passes the same conformance suite | LIVE EXTERNAL | `QA_LIVE_EXTERNAL=1 npm test -- tests/live/` |
 | D15 | Nothing in the release notes claims exactly-once delivery | MANUAL | ADR-012 |
 
 D11 gates D1. A store that conforms perfectly is useless if the caller cannot
@@ -103,12 +106,13 @@ tell it which state to record.
 | E5 | AnyList failures — login, definite create, ambiguous create, verify unreadable, verify missing, id mismatch | AUTOMATED | same |
 | E6 | No automatic retry of any external write | AUTOMATED | same |
 | E7 | Classification is by error **code**, never by matching message text | AUTOMATED | `src/app/import-service.test.ts` |
-| E8 | Oversized body and unsupported media type return a client error (QA-001) | AUTOMATED | **currently fails the intent** — locked as 500 |
+| E8 | Oversized body and unsupported media type return a client error (QA-001) | AUTOMATED | ✅ 413 / 415 |
 | E9 | CLI writes nothing to stdout on any failure | AUTOMATED | `src/index.test.ts` |
-| E10 | Minimum usable recipe enforced on `/api/imports` (ADR-019) | AUTOMATED once implemented | `imports-endpoint.test.ts` |
-| E11 | The same gate reaches `POST /api/import` and the CLI (QA-003) | MANUAL | **not in the approved contract** — needs a decision |
-| E12 | Instagram redirect policy: external, downgrade, malformed, loop | AUTOMATED once implemented | `tests/social/instagram-hardening.test.ts` |
-| E13 | An interstitial description is rejected, not extracted (QA-002) | AUTOMATED once implemented | same |
+| E10 | Minimum usable recipe enforced at the import-service boundary (ADR-019) | AUTOMATED | ✅ `pipeline-failures.test.ts` |
+| E11 | The same gate reaches `POST /api/import` and the CLI (QA-003) | AUTOMATED | ✅ gate lives at the shared boundary |
+| E14 | QA-025: a blank-only instruction or ingredient name still passes the gate | MANUAL | contract decision, minor |
+| E12 | Instagram redirect policy: external, downgrade, malformed, loop, host smuggling | AUTOMATED | ✅ `tests/social/instagram-hardening.test.ts` |
+| E13 | An interstitial description is rejected, not extracted (QA-002) | AUTOMATED | ✅ same |
 
 ## F. Security and logging
 
@@ -126,7 +130,7 @@ tell it which state to record.
 | F10 | `.env` is not committed and `.gitignore` still covers it | MANUAL | `git check-ignore .env` |
 | F11 | `RECIPE_API_KEY` differs from `ANTHROPIC_API_KEY` and `ANYLIST_PASSWORD` | MANUAL | deployment config |
 | F12 | `npm audit` clean; `@anylist-napi/anylist-napi` risk re-reviewed | MANUAL | see `CLAUDE.md` Known Issues |
-| F13 | A client-supplied `X-Request-Id` is echoed without becoming an injection vector | AUTOMATED once implemented | `current-api.test.ts` |
+| F13 | A client-supplied `X-Request-Id` is adopted and echoed | AUTOMATED | ✅ `current-api.test.ts` |
 | F14 | **Native stderr on failed AnyList login does not leak `set-cookie`** (QA-024, ADR-023) | LIVE EXTERNAL | run a failed login and read the raw stderr |
 | F15 | Restored-token and refresh flows produce no equivalent native leakage | LIVE EXTERNAL | AnyList research workstream |
 
@@ -198,3 +202,41 @@ Step 7 is where QA-002 gets checked in the real world: if Instagram returns a
   someone enables them.
 - **The corpus baseline is a deliberate edit.** If `npm test` reports the
   quality counts changed, that is the signal, not noise.
+
+
+---
+
+## What is still unverified
+
+Every AUTOMATED item above is green: **1079 passing, 0 failing, typecheck
+clean.** Nothing in this section can be closed by the test suite, and none of it
+has been done.
+
+### LIVE EXTERNAL — requires real credentials and real services
+
+| # | Check | Why it cannot be automated |
+|---|---|---|
+| D14 | Redis passes the idempotency conformance suite | `MemoryIdempotencyStore` gets claim atomicity structurally from the event loop; Redis has to buy it with a Lua script, and only Redis runs in production. Ready to run: `QA_LIVE_EXTERNAL=1 npm test -- tests/live/` |
+| B5 | The model produces each fixture's `expectedExtraction` | The corpus fixtures carry synthetic URLs; this needs real posts and a real Anthropic call |
+| B6–B8 | Instagram still serves Open Graph metadata; TikTok oEmbed shape unchanged | Upstream behaviour, not ours |
+| C7, C10 | A recipe really appears in the AnyList app, with times in the note | Requires a real account write |
+| C11 | `deleteRecipe()` still unreliable (ADR-021) | Upstream behaviour |
+| F14, F15 | **Native stderr does not leak `set-cookie` on failed AnyList login** (QA-024) | Outside the Node redaction boundary entirely; needs a real failed login and raw stderr capture |
+| G1–G10 | Everything about the Vercel deployment | Needs a deployment |
+
+F14 is the one with a security consequence. ADR-023 requires it be investigated
+and mitigated before **broad consumer deployment**; it is explicitly acceptable
+for private smoke testing with known-good credentials.
+
+G4 remains the item most likely to fail first: the AnyList package ships a
+prebuilt native binary, and nothing about it working on macOS proves it loads in
+Vercel's Linux runtime. Test it before anything else in that section.
+
+### MANUAL — decisions, not tests
+
+- **QA-025** — whether a blank-only instruction or ingredient name should fail
+  the usability gate. Narrows what ADR-019 admits, so it is a contract call.
+- **QA-026** — whether `requestId` belongs in the `POST /api/import` and 404
+  envelopes. A one-line ruling in `contracts.md`.
+- **QA-023** — whether inbound hardening should trim strings other than `title`.
+- **QA-013, QA-018** — still open from the previous review.

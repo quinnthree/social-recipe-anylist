@@ -7,6 +7,7 @@ import { AnyListError, type CreateRecipeOptions } from "../../src/anylist/types.
 import {
   ANYLIST_ERROR_CODES,
   CODE_TO_STATE,
+  OUTCOME_TO_CLAIM_STATUS,
   SCENARIO_TO_CODE,
   type AnyListErrorCode,
 } from "./anylist-error-contract.js";
@@ -89,12 +90,14 @@ describe("the approved code → idempotency-state mapping", () => {
   it("never lets a createRecipe exception become retryable", () => {
     // The rule ADR-020 exists for: a thrown exception does not prove the write
     // did not land, so it must not license a second attempt.
-    expect(mayCallCreateRecipe(REQUIRED_ACTION[CODE_TO_STATE.create_failed])).toBe(false);
+    const status = OUTCOME_TO_CLAIM_STATUS[CODE_TO_STATE.create_failed];
+
+    expect(mayCallCreateRecipe(REQUIRED_ACTION[status])).toBe(false);
   });
 
   it("permits exactly one code to reach createRecipe again", () => {
     const retryable = ANYLIST_ERROR_CODES.filter((code) =>
-      mayCallCreateRecipe(REQUIRED_ACTION[CODE_TO_STATE[code]]),
+      mayCallCreateRecipe(REQUIRED_ACTION[OUTCOME_TO_CLAIM_STATUS[CODE_TO_STATE[code]]]),
     );
 
     expect(retryable).toEqual(["login_failed"]);
@@ -104,38 +107,12 @@ describe("the approved code → idempotency-state mapping", () => {
     // The counter-intuitive one. A read-back that found nothing looks like
     // "nothing was written", but eventual consistency means it is not proof.
     expect(CODE_TO_STATE.verify_missing).toBe("AMBIGUOUS");
-    expect(mayCallCreateRecipe(REQUIRED_ACTION.AMBIGUOUS)).toBe(false);
+    expect(mayCallCreateRecipe(REQUIRED_ACTION.ambiguous)).toBe(false);
   });
 });
 
-describe("AnyListError — not yet typed", () => {
-  it.each(Object.keys(SCENARIOS) as (keyof typeof SCENARIOS)[])(
-    "carries no code for %s today",
-    async (scenario) => {
-      // Tripwire. When AnyListError gains its `code`, these fail and the
-      // specification below must be enabled.
-      const error = await failureFrom(SCENARIOS[scenario]);
-
-      expect(error.code).toBeUndefined();
-    },
-  );
-
-  it("still collapses every failure into one indistinguishable kind", async () => {
-    // QA-009, restated against the approved contract. login_failed must become
-    // FAILED_SAFE and create_failed must become AMBIGUOUS, but the adapter
-    // gives the caller nothing to tell them apart beyond a message it must not
-    // parse (the error envelope forbids classifying on message text).
-    const login = await failureFrom(SCENARIOS.loginThrows);
-    const create = await failureFrom(SCENARIOS.createThrows);
-
-    expect(login.code).toBeUndefined();
-    expect(create.code).toBeUndefined();
-    expect(login).toBeInstanceOf(AnyListError);
-    expect(create).toBeInstanceOf(AnyListError);
-  });
-
-  it("does not leak provider detail while doing so", async () => {
-    // Whatever the code change looks like, this must keep holding.
+describe("AnyListError redaction still holds alongside the code", () => {
+  it("does not leak provider detail", async () => {
     const error = await failureFrom({
       loginError: Object.assign(new Error("login failed for cook@example.com / hunter2"), {
         response: { statusCode: 401 },
@@ -146,13 +123,21 @@ describe("AnyListError — not yet typed", () => {
     expect(error.message).not.toContain("hunter2");
     expect((error as { cause?: unknown }).cause).toBeUndefined();
   });
+
+  it("carries a code on every failure path, so nothing falls through untyped", async () => {
+    for (const options of Object.values(SCENARIOS)) {
+      const error = await failureFrom(options);
+
+      expect(ANYLIST_ERROR_CODES).toContain(error.code);
+    }
+  });
 });
 
 /**
- * ENABLE when `AnyListError` gains `code` (ADR-020). Change `describe.skip` to
- * `describe` and delete the tripwire block above.
+ * QA-009 RESOLVED. `AnyListError` carries a typed `code` (ADR-020).
+ * Activated 2026-08-21.
  */
-describe.skip("AnyListError.code — specification (ADR-020)", () => {
+describe("AnyListError.code — ADR-020", () => {
   it.each(Object.entries(SCENARIO_TO_CODE) as [keyof typeof SCENARIOS, AnyListErrorCode][])(
     "reports %s as %s",
     async (scenario, code) => {

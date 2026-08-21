@@ -45,14 +45,16 @@ describe("what the assessment does and does not signal", () => {
     ]);
   });
 
-  it("scores a login-page blurb far below any real recipe", () => {
-    // The one case where confidence would carry a usable gate signal — but
-    // nothing in the pipeline reads it. See docs/qa/findings.md QA-003.
+  it("never sees a login-page blurb, because ingestion now rejects it", () => {
+    // QA-002 RESOLVED. This fixture used to reach assessment and score 0.1,
+    // which was the only signal that anything was wrong. The hardened Instagram
+    // adapter rejects the interstitial before any model call, so there is no
+    // extraction to assess and confidence is not load-bearing here any more.
     const blurb = fixture("instagram-login-blurb");
-    const real = fixture("tiktok-cottage-cheese-brownies");
 
-    expect(blurb.expectedAssessment?.confidence).toBe(0.1);
-    expect(real.expectedAssessment?.confidence).toBe(1);
+    expect(blurb.expectedExtraction).toBeNull();
+    expect(blurb.expectedAssessment).toBeNull();
+    expect(blurb.expectedFailure?.importKind).toBe("extraction_failed");
   });
 
   it("keeps every corpus confidence inside 0..1", () => {

@@ -25,13 +25,15 @@ const result: ImportResult = {
   saved: { name: recipe.title, identifier: "anylist-recipe-id-42" },
 };
 
-function server(importRecipe = vi.fn(async (): Promise<ImportResult> => result)) {
+function server(
+  importRecipe = vi.fn(async (_url: string, _options?: unknown): Promise<ImportResult> => result),
+) {
   return { app: buildServer({ apiKey: API_KEY, importRecipe }), importRecipe };
 }
 
 function failingWith(error: unknown) {
   return server(
-    vi.fn(async (): Promise<ImportResult> => {
+    vi.fn(async (_url: string, _options?: unknown): Promise<ImportResult> => {
       throw error;
     }),
   );
@@ -66,24 +68,67 @@ describe("GET /health", () => {
   });
 });
 
-describe("authentication is enforced before routing", () => {
-  it.each(["/api/import", "/api/imports", "/api/exports/anylist", "/api/does-not-exist"])(
-    "answers 401, not 404, for an unauthenticated %s",
+describe("authentication is deny-by-default over every registered route", () => {
+  it.each(["/api/import", "/api/imports", "/api/exports/anylist"])(
+    "answers 401 for an unauthenticated %s",
     async (url) => {
-      // Unauthenticated callers must not be able to enumerate which routes
-      // exist. 401 before 404 is what gives that.
       const { app } = server();
       const response = await app.inject({ method: "POST", url, payload: {} });
 
       expect(response.statusCode).toBe(401);
-      expect(response.json()).toEqual({ success: false, error: "Unauthorized" });
+      expect(response.json().error).toBe("Unauthorized");
     },
   );
 
-  it("answers 401 for a wrong method on a real route before reporting 404", async () => {
+  it("carries requestId in the 401 envelope on the production routes", async () => {
     const { app } = server();
 
-    expect((await app.inject({ method: "GET", url: "/api/import" })).statusCode).toBe(401);
+    for (const url of ["/api/imports", "/api/exports/anylist"]) {
+      const response = await app.inject({ method: "POST", url, payload: {} });
+
+      expect(response.json().requestId).toBe(response.headers["x-request-id"]);
+    }
+  });
+
+  it("keeps the Part 1 envelope byte-for-byte on POST /api/import", async () => {
+    // The frozen Part 1 shape: no requestId in the body. The header is still
+    // set, which is additive and cannot break a client that does not read it.
+    // See the report — whether "requestId wherever an envelope is returned"
+    // was meant to reach this route is a contract question, not a defect.
+    const { app } = server();
+    const response = await app.inject({ method: "POST", url: "/api/import", payload: {} });
+
+    expect(response.json()).toEqual({ success: false, error: "Unauthorized" });
+    expect(response.headers["x-request-id"]).toBeTruthy();
+  });
+
+  it("answers 404, not 401, for a path no route is registered at", async () => {
+    // Deliberate: authentication is applied over *registered* routes, so an
+    // unmatched path falls to the not-found handler and answers `404 Not found`
+    // exactly as Part 1 freezes it.
+    //
+    // Consequence worth knowing: an unauthenticated caller can tell a
+    // registered route (401) from an unregistered one (404). The route set is
+    // public in contracts.md, so this discloses nothing secret — recorded as an
+    // observation, not a finding.
+    const { app } = server();
+    const response = await app.inject({ method: "POST", url: "/api/does-not-exist", payload: {} });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toBe("Not found");
+  });
+
+  it("answers 404 for a wrong method on a real route", async () => {
+    const { app } = server();
+
+    expect((await app.inject({ method: "GET", url: "/api/import" })).statusCode).toBe(404);
+  });
+
+  it("never reaches the pipeline for an unauthenticated request", async () => {
+    const { app, importRecipe } = server();
+    await app.inject({ method: "POST", url: "/api/import", payload: { url: golden.url } });
+
+    expect(importRecipe).not.toHaveBeenCalled();
   });
 
   it("answers 404 for an unknown /api route once authenticated", async () => {
@@ -135,16 +180,29 @@ describe("POST /api/import — request handling", () => {
     const url = "https://www.tiktok.com/@a/video/1?is_from_webapp=1&sender_device=pc";
     await app.inject({ method: "POST", url: "/api/import", headers: AUTH, payload: { url } });
 
-    expect(importRecipe).toHaveBeenCalledWith(url);
+    expect(importRecipe.mock.calls[0]?.[0]).toBe(url);
   });
 
   it("never runs a dry run: the endpoint always commits to AnyList", async () => {
-    // importRecipe is called with the URL alone, so `dryRun` defaults to false.
-    // The one-shot endpoint has no way to ask for extraction without a save.
+    // The route now passes an options object carrying an `onSourceContent`
+    // telemetry callback. That is additive: what matters for this contract is
+    // that `dryRun` is never set, so the one-shot endpoint cannot be talked
+    // into extracting without saving.
     const { app, importRecipe } = server();
     await app.inject({ method: "POST", url: "/api/import", headers: AUTH, payload: { url: golden.url } });
 
-    expect(importRecipe.mock.calls[0]).toEqual([golden.url]);
+    const options = importRecipe.mock.calls[0]?.[1] as { dryRun?: boolean } | undefined;
+    expect(options?.dryRun).toBeUndefined();
+  });
+
+  it("passes only a telemetry callback alongside the URL", async () => {
+    // Pins the shape of the addition, so a future option that changes what the
+    // endpoint does cannot be added without this test noticing.
+    const { app, importRecipe } = server();
+    await app.inject({ method: "POST", url: "/api/import", headers: AUTH, payload: { url: golden.url } });
+
+    const options = importRecipe.mock.calls[0]?.[1] as Record<string, unknown> | undefined;
+    expect(Object.keys(options ?? {})).toEqual(["onSourceContent"]);
   });
 
   it("ignores a query string on the route", async () => {
@@ -179,10 +237,9 @@ describe("POST /api/import — request handling", () => {
     expect(importRecipe).not.toHaveBeenCalled();
   });
 
-  it("rejects a text/plain body with 400", async () => {
-    // Fastify parses text/plain into a string with its default parser, so this
-    // is the Zod schema rejecting a non-object body rather than a media-type
-    // refusal.
+  it("rejects a text/plain body with 415, not a confusing 400", async () => {
+    // The default text/plain parser is removed, so a wrong content type is an
+    // honest media-type refusal rather than a complaint about the body shape.
     const { app } = server();
     const response = await app.inject({
       method: "POST",
@@ -191,17 +248,13 @@ describe("POST /api/import — request handling", () => {
       payload: "https://www.tiktok.com/@a/video/1",
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ success: false, error: "Invalid request body" });
+    expect(response.statusCode).toBe(415);
+    expect(response.json()).toEqual({ success: false, error: "Unsupported content type" });
   });
 
   it.each(["application/xml", "application/x-www-form-urlencoded", "application/octet-stream"])(
-    "QA-001: reports the unsupported media type %s as a 500, not the approved 415",
+    "QA-001 RESOLVED: reports the unsupported media type %s as 415",
     async (contentType) => {
-      // Fastify raises FST_ERR_CTP_INVALID_MEDIA_TYPE with statusCode 415, and
-      // the error handler collapses every non-400 status to 500. The approved
-      // contract requires `415 Unsupported content type`. Locked as current
-      // behaviour; the target is in the specification block at the bottom.
       const { app } = server();
       const response = await app.inject({
         method: "POST",
@@ -210,8 +263,8 @@ describe("POST /api/import — request handling", () => {
         payload: "<recipe/>",
       });
 
-      expect(response.statusCode).toBe(500);
-      expect(response.json()).toEqual({ success: false, error: "Recipe import failed" });
+      expect(response.statusCode).toBe(415);
+      expect(response.json()).toEqual({ success: false, error: "Unsupported content type" });
     },
   );
 
@@ -238,7 +291,7 @@ describe("POST /api/import — request handling", () => {
       const { app, importRecipe } = server();
       await app.inject({ method: "POST", url: "/api/import", headers: AUTH, payload: { url } });
 
-      expect(importRecipe).toHaveBeenCalledWith(url);
+      expect(importRecipe.mock.calls[0]?.[0]).toBe(url);
     },
   );
 
@@ -254,12 +307,7 @@ describe("POST /api/import — request handling", () => {
     expect(response.statusCode).toBe(200);
   });
 
-  it("QA-001: reports a body over the 8 KB limit as a 500, not the approved 413", async () => {
-    // Fastify raises FST_ERR_CTP_BODY_TOO_LARGE with statusCode 413. The error
-    // handler maps anything that is not exactly 400 to 500, so an oversized
-    // request — entirely the client's doing — is reported as a server failure
-    // and logged at error level. The approved contract requires
-    // `413 Request body too large`.
+  it("QA-001 RESOLVED: reports a body over the 8 KB limit as 413", async () => {
     const { app } = server();
     const response = await app.inject({
       method: "POST",
@@ -268,53 +316,8 @@ describe("POST /api/import — request handling", () => {
       payload: { url: `https://www.tiktok.com/${"a".repeat(9000)}` },
     });
 
-    expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({ success: false, error: "Recipe import failed" });
-  });
-});
-
-describe("the minimum-usable-recipe gate does not cover this endpoint", () => {
-  // ADR-019 gates POST /api/imports. POST /api/import is unversioned, remains
-  // in the contract for CLI and internal use, and got no such gate — so the
-  // QA-003 path is still open on the route that actually ships today.
-  const empty = requireRecipe(fixture("instagram-login-blurb"));
-
-  it("returns 200 for an extraction with no ingredients and no instructions", async () => {
-    const { app } = server(
-      vi.fn(async (): Promise<ImportResult> => ({
-        recipe: empty,
-        saved: { name: empty.title, identifier: "anylist-junk-id" },
-      })),
-    );
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/import",
-      headers: AUTH,
-      payload: { url: empty.source.url },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().success).toBe(true);
-    expect(response.json().saved.id).toBe("anylist-junk-id");
-  });
-
-  it("reports success while returning a confidence of 0.1 and six warnings", async () => {
-    const { app } = server(
-      vi.fn(async (): Promise<ImportResult> => ({
-        recipe: empty,
-        saved: { name: empty.title, identifier: "anylist-junk-id" },
-      })),
-    );
-    const body = (await app.inject({
-      method: "POST",
-      url: "/api/import",
-      headers: AUTH,
-      payload: { url: empty.source.url },
-    })).json();
-
-    expect(body.recipe.confidence).toBe(0.1);
-    expect(body.recipe.warnings).toHaveLength(6);
-    expect(body.success).toBe(true);
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toEqual({ success: false, error: "Request body too large" });
   });
 });
 
@@ -368,23 +371,20 @@ describe("the error envelope is uniform", () => {
     expect(typeof body.error).toBe("string");
   });
 
-  it("returns no X-Request-Id header on any response today", async () => {
-    // The approved contract requires a request ID on EVERY response — 200, 400,
-    // 401, 404, 409, 413, 415, 422, 500 alike, with no exceptions. Neither the
-    // header nor the envelope field exists yet. This test fails the moment they
-    // land, which is the point: it forces the specifications to be unskipped.
+  it("sets X-Request-Id on every response, success and failure alike", async () => {
     const { app } = server();
 
     const success = await app.inject({ method: "POST", url: "/api/import", headers: AUTH, payload: { url: golden.url } });
     const failure = await app.inject({ method: "POST", url: "/api/import", payload: {} });
+    const notFound = await app.inject({ method: "GET", url: "/nope" });
+    const health = await app.inject({ method: "GET", url: "/health" });
 
-    expect(success.headers["x-request-id"]).toBeUndefined();
-    expect(failure.headers["x-request-id"]).toBeUndefined();
-    expect(success.json().requestId).toBeUndefined();
-    expect(failure.json().requestId).toBeUndefined();
+    for (const response of [success, failure, notFound, health]) {
+      expect(response.headers["x-request-id"]).toBeTruthy();
+    }
   });
 
-  it("does not adopt a client-supplied X-Request-Id today", async () => {
+  it("adopts a client-supplied X-Request-Id", async () => {
     const { app } = server();
     const response = await app.inject({
       method: "POST",
@@ -393,20 +393,14 @@ describe("the error envelope is uniform", () => {
       payload: { url: golden.url },
     });
 
-    expect(response.headers["x-request-id"]).toBeUndefined();
-    expect(response.body).not.toContain("client-supplied-id");
+    expect(response.headers["x-request-id"]).toBe("client-supplied-id");
   });
 });
 
 /**
- * ENABLE when the approved HTTP error contract lands (contracts.md "HTTP error
- * contract"). Change `describe.skip` to `describe` and delete the QA-001 locks
- * and the "no X-Request-Id today" tests above.
- *
- * These apply to POST /api/import as well as the new routes: the approved
- * request-ID rule says "every response ... with no exceptions".
+ * The approved HTTP error contract. Implemented and activated 2026-08-21.
  */
-describe.skip("approved HTTP error contract — specification", () => {
+describe("approved HTTP error contract", () => {
   it("returns 413 Request body too large for an oversized body", async () => {
     const { app } = server();
     const response = await app.inject({
@@ -464,9 +458,10 @@ describe.skip("approved HTTP error contract — specification", () => {
     ["401", { url: "/api/import", auth: false, payload: { url: golden.url } }],
     ["400", { url: "/api/import", auth: true, payload: { nope: 1 } }],
     ["404", { url: "/api/unknown", auth: true, payload: {} }],
+    ["413", { url: "/api/import", auth: true, payload: { url: `https://x.co/${"a".repeat(9000)}` } }],
   ] as const)("sets X-Request-Id on a %s response", async (_label, options) => {
     // "Every response carries a request ID — 200, 400, 401, 404, 409, 413, 415,
-    // 422, and 500 alike, with no exceptions."
+    // 422, and 500 alike, with no exceptions." The header is universal.
     const { app } = server();
     const response = await app.inject({
       method: "POST",
@@ -476,7 +471,29 @@ describe.skip("approved HTTP error contract — specification", () => {
     });
 
     expect(response.headers["x-request-id"]).toBeTruthy();
+  });
+
+  it("puts requestId in the envelope on the production routes", async () => {
+    const { app } = server();
+    const response = await app.inject({ method: "POST", url: "/api/imports", payload: {} });
+
     expect(response.json().requestId).toBe(response.headers["x-request-id"]);
+  });
+
+  it("leaves requestId out of the frozen Part 1 envelopes", async () => {
+    // POST /api/import and the not-found handler keep their Part 1 bodies
+    // byte-for-byte. Whether the approved "requestId wherever an envelope is
+    // returned" was meant to reach them is a contract question — see the
+    // report. The header is present on both regardless.
+    const { app } = server();
+
+    const legacy = await app.inject({ method: "POST", url: "/api/import", payload: {} });
+    const notFound = await app.inject({ method: "GET", url: "/nope" });
+
+    expect(legacy.json().requestId).toBeUndefined();
+    expect(notFound.json().requestId).toBeUndefined();
+    expect(legacy.headers["x-request-id"]).toBeTruthy();
+    expect(notFound.headers["x-request-id"]).toBeTruthy();
   });
 
   it("sets X-Request-Id on GET /health", async () => {

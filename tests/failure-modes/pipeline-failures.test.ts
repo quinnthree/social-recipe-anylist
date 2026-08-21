@@ -21,6 +21,11 @@ import { stubFetchFor, stubFetchRejection, stubFetchResponse } from "../support/
 const golden = fixture("tiktok-cottage-cheese-brownies");
 const recipe = requireRecipe(golden);
 
+/** A saver that always succeeds, for tests about what reaches it. */
+const saverOk: RecipeSaver = {
+  save: async () => ({ name: recipe.title, identifier: "saved-id" }),
+};
+
 const neverCalled = {
   fetchSourceContent: (): never => {
     throw new Error("fetchSourceContent should not have been called.");
@@ -169,6 +174,111 @@ describe("extraction (Anthropic) failures", () => {
 
     expect(result.saved).toBeNull();
     expect(createSaver).not.toHaveBeenCalled();
+  });
+});
+
+describe("the minimum usable recipe gate (ADR-019, QA-003)", () => {
+  // The gate lives at the shared import-service boundary, not in a route, so it
+  // covers POST /api/imports, the legacy POST /api/import, AND the CLI. That is
+  // the fix for QA-003: the legacy path is the one that actually writes to
+  // AnyList, so it was the wrong one to hold to a weaker standard.
+  const emptyExtraction = {
+    ...recipe,
+    ingredients: [],
+    instructions: [],
+    confidence: 0.1,
+    warnings: ["No ingredients were found in the source text."],
+  };
+
+  it.each([
+    ["no ingredients", { ingredients: [] }],
+    ["no instructions", { instructions: [] }],
+    ["neither", { ingredients: [], instructions: [] }],
+    ["a blank title", { title: "   " }],
+  ])("rejects an extraction with %s as extraction_failed", async (_label, overrides) => {
+    stubFetchFor(golden);
+    const kind = await kindOf(golden.url, {
+      parseRecipe: async () => ({ ...recipe, ...overrides }),
+    });
+
+    expect(kind).toBe("extraction_failed");
+  });
+
+  it("never constructs the AnyList saver for an unusable recipe", async () => {
+    // The whole point: an empty recipe must not reach a write on any path.
+    const createSaver = vi.fn((): RecipeSaver => {
+      throw new Error("must not be reached");
+    });
+    stubFetchFor(golden);
+
+    await importRecipe(golden.url, {
+      deps: deps({ createSaver, parseRecipe: async () => emptyExtraction }),
+    }).catch(() => undefined);
+
+    expect(createSaver).not.toHaveBeenCalled();
+  });
+
+  it("rejects on structure, not on confidence", async () => {
+    // A low-confidence recipe that meets the minimum still succeeds — ADR-019
+    // is explicit that confidence takes no part in the decision.
+    const lowConfidence = { ...recipe, confidence: 0.1, warnings: ["thin source"] };
+    stubFetchFor(golden);
+
+    const result = await importRecipe(golden.url, {
+      deps: deps({ parseRecipe: async () => lowConfidence, createSaver: () => saverOk }),
+    });
+
+    expect(result.recipe.confidence).toBe(0.1);
+    expect(result.saved).not.toBeNull();
+  });
+
+  it("QA-025: trims the title but counts blank ingredients and instructions", async () => {
+    // `isUsableRecipe` applies `.trim()` to the title and a bare `.length > 0`
+    // to the two arrays, so a recipe whose only instruction is "   " counts as
+    // usable and reaches the AnyList write.
+    //
+    // Literally contract-conformant — ADR-019 says "at least one instruction",
+    // and "   " is one — but not what "can a person actually cook from this"
+    // means. Recorded as current behaviour rather than asserted the other way,
+    // because tightening it is a contract decision, not a QA one. The same
+    // whitespace weakness is QA-023 at the schema level.
+    stubFetchFor(golden);
+
+    const result = await importRecipe(golden.url, {
+      deps: deps({
+        parseRecipe: async () => ({ ...recipe, instructions: ["   "] }),
+        createSaver: () => saverOk,
+      }),
+    });
+
+    expect(result.saved).not.toBeNull();
+  });
+
+  it("QA-025: the same applies to a blank ingredient name", async () => {
+    stubFetchFor(golden);
+
+    const result = await importRecipe(golden.url, {
+      deps: deps({
+        parseRecipe: async () => ({
+          ...recipe,
+          ingredients: [{ quantity: null, unit: null, name: "   ", preparation: null, rawText: "x" }],
+        }),
+        createSaver: () => saverOk,
+      }),
+    });
+
+    expect(result.saved).not.toBeNull();
+  });
+
+  it("does trim the title, so a blank title is rejected", async () => {
+    // The half that is handled, which is what makes the other half look like an
+    // oversight rather than a decision.
+    stubFetchFor(golden);
+    const kind = await kindOf(golden.url, {
+      parseRecipe: async () => ({ ...recipe, title: "   " }),
+    });
+
+    expect(kind).toBe("extraction_failed");
   });
 });
 

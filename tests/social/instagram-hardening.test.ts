@@ -22,6 +22,11 @@ import { stubFetchChain, stubFetchFor, stubFetchResponse } from "../support/fetc
 
 const POST_URL = "https://www.instagram.com/reel/Cq1incomplete/";
 
+/** A response that must read as a genuine post: no interstitial signal anywhere. */
+const CAPTION_BODY =
+  `<meta property="og:description" ` +
+  `content="12 likes, 1 comments - pastachef on August 3, 2026: &quot;CACIO E PEPE 300 g spaghetti. Toast the pepper.&quot;." />`;
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -33,26 +38,16 @@ async function failureFor(url: string): Promise<ExtractionError> {
   return error as ExtractionError;
 }
 
-describe("current redirect handling delegates everything", () => {
-  it("asks undici to follow redirects, so no hop is ours to inspect", async () => {
+describe("redirects are followed by hand, not by fetch", () => {
+  it("asks fetch NOT to follow redirects, so every hop is ours to validate", async () => {
     const instagram = fixture("instagram-incomplete-caption");
     const log = stubFetchFor(instagram);
     await fetchSourceContent(instagram.url);
 
-    expect(log.calls[0]?.init["redirect"]).toBe("follow");
+    expect(log.calls[0]?.init["redirect"]).toBe("manual");
   });
 
-  it("makes exactly one observable request however long the real chain is", async () => {
-    // The consequence of `redirect: "follow"`: intermediate destinations never
-    // reach our code, so an external or downgraded hop cannot be rejected.
-    const instagram = fixture("instagram-incomplete-caption");
-    const log = stubFetchFor(instagram);
-    await fetchSourceContent(instagram.url);
-
-    expect(log.urls).toHaveLength(1);
-  });
-
-  it("sends a browser-shaped User-Agent, which is what makes a login wall likely", async () => {
+  it("sends a browser-shaped User-Agent, which is what earns the Open Graph tags", async () => {
     const instagram = fixture("instagram-incomplete-caption");
     const log = stubFetchFor(instagram);
     await fetchSourceContent(instagram.url);
@@ -61,36 +56,24 @@ describe("current redirect handling delegates everything", () => {
     expect(headers?.["User-Agent"]).toContain("Mozilla/5.0");
   });
 
-  it("trusts the response body without checking where it came from", async () => {
-    // The adapter never reads `response.url`, so it cannot tell whether the
-    // body it parsed came from instagram.com or from wherever a redirect chain
-    // ended. Any page serving og:description is accepted as a caption.
-    stubFetchResponse(
-      200,
-      `<meta property="og:title" content="attacker on Instagram: &quot;x&quot;" />` +
-        `<meta property="og:description" content="attacker on August 1, 2026: &quot;RECIPE FROM SOMEWHERE ELSE ENTIRELY&quot;." />`,
-    );
+  it("makes exactly one request when nothing redirects", async () => {
+    const instagram = fixture("instagram-incomplete-caption");
+    const log = stubFetchFor(instagram);
+    await fetchSourceContent(instagram.url);
+
+    expect(log.urls).toHaveLength(1);
+  });
+
+  it("keeps the user's URL as provenance, never the resolved one", async () => {
+    stubFetchChain([
+      { status: 301, location: "https://www.instagram.com/reel/Cq1incomplete/?hl=en" },
+      { status: 200, body: CAPTION_BODY },
+    ]);
 
     const content = await fetchSourceContent(POST_URL);
 
-    expect(content.platform).toBe("instagram");
-    expect(content.text).toBe("RECIPE FROM SOMEWHERE ELSE ENTIRELY");
-    // Provenance records the URL we asked for, not the one that answered.
     expect(content.url).toBe(POST_URL);
   });
-
-  it.each([301, 302, 303, 307, 308])(
-    "treats a bare %i reaching the adapter as source_unavailable",
-    async (status) => {
-      // Unreachable today, because undici resolves redirects first. Recorded as
-      // the baseline for the moment redirect handling becomes manual: a 3xx is
-      // not `ok`, so it currently falls into the generic unavailable path
-      // rather than into any redirect logic.
-      stubFetchChain([{ status, location: "https://www.instagram.com/accounts/login/" }]);
-
-      expect((await failureFor(POST_URL)).code).toBe("source_unavailable");
-    },
-  );
 });
 
 describe("login walls and interstitials", () => {
@@ -101,51 +84,43 @@ describe("login walls and interstitials", () => {
     expect((await failureFor(wall.url)).code).toBe("source_unavailable");
   });
 
-  it("QA-002: accepts an interstitial whose description is boilerplate", async () => {
+  it("QA-002 RESOLVED: rejects an interstitial whose description is boilerplate", async () => {
     // "Never pass arbitrary interstitial description text to the recipe model
-    // as though it were a creator caption" — not implemented. The sign-in blurb
-    // is accepted as a caption and billed to Anthropic as one.
+    // as though it were a creator caption." The sign-in blurb is now refused
+    // before any model call.
     const blurb = fixture("instagram-login-blurb");
     stubFetchFor(blurb);
 
-    const content = await fetchSourceContent(blurb.url);
-
-    expect(content.textSource).toBe("og-description");
-    expect(content.text).toContain("Sign in to check out");
-    expect(content.creator).toBeNull();
+    expect((await failureFor(blurb.url)).code).toBe("source_unavailable");
   });
 
-  it("cannot distinguish an interstitial from a caption by any current signal", async () => {
-    // Both produce a SourceContent of exactly the same shape. Nothing marks one
-    // as suspect, which is why the detection has to live in the adapter.
+  it("rejects the interstitial after exactly one request and no model call", async () => {
     const blurb = fixture("instagram-login-blurb");
+    const log = stubFetchFor(blurb);
+
+    await failureFor(blurb.url);
+
+    expect(log.urls).toHaveLength(1);
+  });
+
+  it("still accepts a real post whose caption is genuine", async () => {
+    // The detection must not be so eager that it refuses real posts. This is
+    // the false-positive guard for the rules above.
     const real = fixture("instagram-incomplete-caption");
-
-    stubFetchFor(blurb);
-    const interstitial = await fetchSourceContent(blurb.url);
-    vi.unstubAllGlobals();
-
     stubFetchFor(real);
-    const caption = await fetchSourceContent(real.url);
 
-    expect(Object.keys(interstitial).sort()).toEqual(Object.keys(caption).sort());
-    expect(interstitial.textSource).toBe(caption.textSource);
+    const content = await fetchSourceContent(real.url);
+
+    expect(content.textSource).toBe("og-description");
+    expect(content.creator).toBe("pastachef");
   });
 });
 
 /**
- * ENABLE when the Instagram adapter implements the approved hardening. It will
- * need `redirect: "manual"` to see each hop, at which point the chain becomes
- * several observable fetches and these assertions become meaningful.
- *
- * Delete the "current redirect handling delegates everything" block above when
- * enabling — its whole subject is the absence of this policy.
+ * Approved Instagram redirect policy. Implemented and activated 2026-08-21.
  */
-describe.skip("Instagram redirect policy — specification", () => {
+describe("Instagram redirect policy", () => {
   const LOGIN_WALL_BODY = `<meta property="og:description" content="   " />`;
-  const CAPTION_BODY =
-    `<meta property="og:description" ` +
-    `content="12 likes, 1 comments - pastachef on August 3, 2026: &quot;CACIO E PEPE 300 g spaghetti. Toast the pepper.&quot;." />`;
 
   it("follows a redirect that stays within the Instagram host policy", async () => {
     const log = stubFetchChain([
@@ -207,13 +182,46 @@ describe.skip("Instagram redirect policy — specification", () => {
 
   it.each([
     ["an empty Location", ""],
-    ["a non-URL Location", "not a url"],
+    ["a whitespace-only Location", "   "],
     ["a javascript: Location", "javascript:alert(1)"],
     ["a data: Location", "data:text/html,<h1>x"],
+    ["an unparseable Location", "http://"],
+    ["a Location with no host", "https://"],
+    ["a Location with a broken authority", "http://["],
+    ["a Location carrying embedded credentials", "https://user:pw@www.instagram.com/reel/x/"],
   ])("rejects %s", async (_label, location) => {
     stubFetchChain([{ status: 302, location }, { status: 200, body: CAPTION_BODY }]);
 
     expect((await failureFor(POST_URL)).code).toBe("source_unavailable");
+  });
+
+  it.each([
+    ["a scheme-relative host swap", "///evil.example/x"],
+    ["a backslash host swap", "\\\\evil.example\\x"],
+  ])("rejects %s, which resolves to a different host", async (_label, location) => {
+    // Both parse successfully and both change the host — `///evil.example/x`
+    // to `https://evil.example/x`, and the backslash form likewise, because
+    // WHATWG URL parsing treats a backslash as a separator. Rejecting on the
+    // parsed hostname rather than on the raw Location string is what catches
+    // them.
+    const log = stubFetchChain([{ status: 302, location }, { status: 200, body: CAPTION_BODY }]);
+
+    expect((await failureFor(POST_URL)).code).toBe("source_unavailable");
+    expect(log.urls).toHaveLength(1);
+  });
+
+  it("resolves a bare relative token in policy rather than rejecting it", async () => {
+    // "not a url" is a perfectly legal relative reference. Resolving it against
+    // the current URL keeps it inside instagram.com, so following it is correct
+    // — the host policy, not the shape of the string, is what decides.
+    const log = stubFetchChain([
+      { status: 302, location: "not a url" },
+      { status: 200, body: CAPTION_BODY },
+    ]);
+
+    await fetchSourceContent(POST_URL);
+
+    expect(log.urls[1]).toBe("https://www.instagram.com/reel/Cq1incomplete/not%20a%20url");
   });
 
   it("rejects a 3xx with no Location header at all", async () => {
