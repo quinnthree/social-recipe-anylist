@@ -52,14 +52,43 @@ describe("RecipeSchema", () => {
     expect(RecipeSchema.safeParse(recipe).success).toBe(false);
   });
 
-  it("rejects an unsupported platform", () => {
+  it("rejects a platform outside the canonical set", () => {
     const recipe = {
       ...completeExtraction,
-      source: { platform: "youtube", creator: null, url: "https://youtube.com/watch?v=abc" },
+      source: { platform: "pinterest", creator: null, url: "https://pinterest.com/pin/1" },
       confidence: 0.5,
       warnings: [],
     };
     expect(RecipeSchema.safeParse(recipe).success).toBe(false);
+  });
+
+  it("accepts youtube as a canonical platform, ahead of ingestion support", () => {
+    // Canonical support and ingestion are separate: the contract admits
+    // "youtube" (ADR-015) while no adapter exists for it yet.
+    const recipe = {
+      ...completeExtraction,
+      source: {
+        platform: "youtube",
+        creator: "creator",
+        url: "https://www.youtube.com/watch?v=abc",
+      },
+      confidence: 0.5,
+      warnings: [],
+    };
+    const parsed = RecipeSchema.safeParse(recipe);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.source.platform).toBe("youtube");
+  });
+
+  it.each(["tiktok", "instagram", "youtube"])("accepts canonical platform %s", (platform) => {
+    const recipe = {
+      ...completeExtraction,
+      source: { platform, creator: null, url: "https://example.com/p/1" },
+      confidence: 0.5,
+      warnings: [],
+    };
+    expect(RecipeSchema.safeParse(recipe).success).toBe(true);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { detectPlatform } from "./index.js";
+import { detectPlatform, fetchSourceContent } from "./index.js";
 import { ExtractionError } from "./types.js";
 
 describe("detectPlatform", () => {
@@ -21,7 +21,37 @@ describe("detectPlatform", () => {
   });
 
   it("rejects an unsupported host", () => {
-    expect(() => detectPlatform("https://youtube.com/watch?v=abc")).toThrow(ExtractionError);
+    expect(() => detectPlatform("https://pinterest.com/pin/1")).toThrow(ExtractionError);
+  });
+
+  describe("youtube: canonically supported, ingestion not implemented", () => {
+    // The canonical Recipe contract admits "youtube" (ADR-015), but no
+    // ingestion adapter exists, so a YouTube URL must still be rejected here.
+    it.each([
+      "https://www.youtube.com/watch?v=abc",
+      "https://youtube.com/shorts/abc",
+      "https://youtu.be/abc",
+      "https://m.youtube.com/watch?v=abc",
+    ])("rejects %s as an unsupported platform", (url) => {
+      expect(() => detectPlatform(url)).toThrow(ExtractionError);
+    });
+
+    it("reports the unsupported_platform code, not a transport failure", () => {
+      let thrown: ExtractionError | null = null;
+      try {
+        detectPlatform("https://www.youtube.com/watch?v=abc");
+      } catch (error: unknown) {
+        thrown = error as ExtractionError;
+      }
+
+      expect(thrown?.code).toBe("unsupported_platform");
+    });
+
+    it("rejects a YouTube URL through the ingestion entry point too", async () => {
+      await expect(fetchSourceContent("https://www.youtube.com/watch?v=abc")).rejects.toThrow(
+        ExtractionError,
+      );
+    });
   });
 
   it("rejects a string that is not a URL", () => {

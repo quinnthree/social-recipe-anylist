@@ -5,6 +5,11 @@ import { ExtractionError, type Platform, type SocialAdapter, type SourceContent 
 export { ExtractionError };
 export type { Platform, SocialAdapter, SourceContent, TextSource } from "./types.js";
 
+// One adapter per ingestible platform. Platform is derived from the canonical
+// vocabulary and narrowed to what this layer implements (see ./types.ts), so
+// this map is exhaustive by construction: a canonical platform we cannot yet
+// ingest — currently "youtube" — is absent from Platform and therefore not
+// required here. An Exclude<> would be redundant.
 const ADAPTERS: Record<Platform, SocialAdapter> = {
   instagram: instagramAdapter,
   tiktok: tiktokAdapter,

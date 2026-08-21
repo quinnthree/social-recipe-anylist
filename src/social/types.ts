@@ -1,4 +1,15 @@
-export type Platform = "instagram" | "tiktok";
+import type { Platform as CanonicalPlatform } from "../recipe/schema.js";
+
+/**
+ * The platforms this layer can actually ingest, derived from the canonical
+ * vocabulary rather than restated. The canonical Recipe owns the full set
+ * (see ../recipe/schema.ts); ingestion declares the subset it implements.
+ *
+ * Type-only import, so no runtime dependency is introduced. Deriving rather
+ * than duplicating means a canonical rename or removal becomes a compile
+ * error here instead of silent drift between two hand-written unions.
+ */
+export type Platform = Extract<CanonicalPlatform, "instagram" | "tiktok">;
 
 /**
  * Where the extracted text came from. Milestone 1 supports two shapes:

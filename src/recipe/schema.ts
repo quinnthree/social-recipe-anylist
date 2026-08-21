@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-export const PlatformSchema = z.enum(["instagram", "tiktok"]);
+/**
+ * Canonical platform values. YouTube is canonically supported but has no
+ * ingestion adapter yet; see src/social/index.ts and docs/decisions.md ADR-015.
+ */
+export const PlatformSchema = z.enum(["tiktok", "instagram", "youtube"]);
 
 /**
  * Optional fields are modelled as nullable rather than absent: an explicit
