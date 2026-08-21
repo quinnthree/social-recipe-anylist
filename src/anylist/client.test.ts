@@ -147,6 +147,72 @@ describe("AnyListRecipeSaver.save", () => {
     });
   });
 
+  describe("failure codes", () => {
+    /**
+     * The code says which step failed, and nothing more. Whether a failure is
+     * safe to retry is the backend's decision, and it needs to know whether
+     * createRecipe was reached to make it — `login_failed` means no write was
+     * attempted, every other code means one was.
+     */
+    async function codeFrom(saver: AnyListRecipeSaver): Promise<unknown> {
+      const thrown = await saver.save(recipe).catch((error: unknown) => error);
+
+      expect(thrown).toBeInstanceOf(AnyListError);
+      return (thrown as AnyListError).code;
+    }
+
+    it("reports login_failed when connecting fails", async () => {
+      const { connect } = fakeClient({ loginError: credentialBearingError(401) });
+
+      expect(await codeFrom(new AnyListRecipeSaver(connect))).toBe("login_failed");
+    });
+
+    it("reports create_failed when createRecipe throws", async () => {
+      const { connect } = fakeClient({ createError: credentialBearingError(500) });
+
+      expect(await codeFrom(new AnyListRecipeSaver(connect))).toBe("create_failed");
+    });
+
+    it("reports verify_unreadable when the read-back itself fails", async () => {
+      const { connect } = fakeClient({ verifyError: credentialBearingError(503) });
+
+      expect(await codeFrom(new AnyListRecipeSaver(connect))).toBe("verify_unreadable");
+    });
+
+    it("reports verify_missing when the read-back does not find the recipe", async () => {
+      const { connect } = fakeClient({ verifyResult: null });
+
+      expect(await codeFrom(new AnyListRecipeSaver(connect))).toBe("verify_missing");
+    });
+
+    it("reports verify_missing when the read-back returns a different recipe", async () => {
+      const { connect } = fakeClient({ verifyResult: { id: "some-other-recipe" } });
+
+      expect(await codeFrom(new AnyListRecipeSaver(connect))).toBe("verify_missing");
+    });
+
+    it("distinguishes the two verification failures, which mean different things", async () => {
+      const unreadable = fakeClient({ verifyError: credentialBearingError(503) });
+      const missing = fakeClient({ verifyResult: null });
+
+      expect(await codeFrom(new AnyListRecipeSaver(unreadable.connect))).not.toBe(
+        await codeFrom(new AnyListRecipeSaver(missing.connect)),
+      );
+    });
+
+    it("carries the code alongside the existing human-readable message", async () => {
+      const { connect } = fakeClient({ verifyResult: null });
+      const thrown = (await new AnyListRecipeSaver(connect)
+        .save(recipe)
+        .catch((error: unknown) => error)) as AnyListError;
+
+      expect(thrown.code).toBe("verify_missing");
+      expect(thrown.message).toBe(
+        "AnyList accepted the save request, but the recipe could not be verified in the account.",
+      );
+    });
+  });
+
   describe("error redaction", () => {
     it("replaces a login failure with a fixed application message", async () => {
       const { connect } = fakeClient({ loginError: credentialBearingError(401) });
@@ -227,6 +293,22 @@ describe("AnyListRecipeSaver.fromEnvironment", () => {
     }
 
     expect(thrown?.message).not.toContain(PASSWORD);
+  });
+
+  it("codes missing credentials as login_failed, since no write can have happened", () => {
+    // The approved code set has no "not configured" member, and this is the
+    // only honest fit: the classification that matters downstream is whether a
+    // recipe might exist, and here no request was ever made.
+    const thrown = (() => {
+      try {
+        AnyListRecipeSaver.fromEnvironment({});
+        return null;
+      } catch (error: unknown) {
+        return error as AnyListError;
+      }
+    })();
+
+    expect(thrown?.code).toBe("login_failed");
   });
 
   it("builds a saver when both are present", () => {

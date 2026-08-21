@@ -31,7 +31,9 @@ export class AnyListRecipeSaver implements RecipeSaver {
     const email = env["ANYLIST_EMAIL"]?.trim();
     const password = env["ANYLIST_PASSWORD"];
 
-    if (!email || !password) throw new AnyListError(MISSING_CREDENTIALS);
+    // Missing configuration is a login failure by the only classification that
+    // matters downstream: no request was made, so no recipe can exist.
+    if (!email || !password) throw new AnyListError(MISSING_CREDENTIALS, "login_failed");
 
     return new AnyListRecipeSaver(async () => {
       const { AnyListClient } = await import("@anylist-napi/anylist-napi");
@@ -51,7 +53,7 @@ export class AnyListRecipeSaver implements RecipeSaver {
       // Its returned id is client-generated, so it is not persistence evidence.
       created = await client.createRecipe(payload);
     } catch (error) {
-      throw new AnyListError(withStatus(SAVE_FAILED, error));
+      throw new AnyListError(withStatus(SAVE_FAILED, error), "create_failed");
     }
 
     await verifyPersisted(client, created.id);
@@ -63,7 +65,7 @@ export class AnyListRecipeSaver implements RecipeSaver {
     try {
       return await this.connect();
     } catch (error) {
-      throw new AnyListError(withStatus(LOGIN_FAILED, error));
+      throw new AnyListError(withStatus(LOGIN_FAILED, error), "login_failed");
     }
   }
 }
@@ -83,10 +85,10 @@ async function verifyPersisted(client: AnyListClientLike, id: string): Promise<v
   try {
     stored = await client.getRecipeById(id);
   } catch (error) {
-    throw new AnyListError(withStatus(VERIFY_UNREADABLE, error));
+    throw new AnyListError(withStatus(VERIFY_UNREADABLE, error), "verify_unreadable");
   }
 
-  if (stored?.id !== id) throw new AnyListError(VERIFY_MISSING);
+  if (stored?.id !== id) throw new AnyListError(VERIFY_MISSING, "verify_missing");
 }
 
 /**

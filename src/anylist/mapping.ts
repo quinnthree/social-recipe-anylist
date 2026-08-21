@@ -54,13 +54,29 @@ export function buildNote(recipe: Recipe): string | undefined {
   return lines.length > 0 ? lines.join("\n") : undefined;
 }
 
-/** "40 minutes" for an exact time, "35–40 minutes" for a range. Ranges are never averaged. */
+/**
+ * "40 minutes" for an exact time, "35–40 minutes" for a range. Ranges are never
+ * averaged.
+ *
+ * An exact time has two valid inbound forms. Our own extraction produces
+ * `maxMinutes: null`, and that stays the preferred representation — but the
+ * production contract also admits `maxMinutes === minMinutes` from a client, and
+ * "40–40 minutes" is not something to write into someone's recipe. Both forms
+ * render identically here.
+ *
+ * A `maxMinutes` below `minMinutes` is not a range anyone stated, so it renders
+ * as the single stated `minMinutes` rather than an inverted one. This is
+ * rendering being defensive, not validation: `TimeRangeSchema` owns what is
+ * accepted, and is deliberately unchanged.
+ */
 function describeTime(time: TimeRange | null): string | null {
   if (time === null) return null;
 
-  return time.maxMinutes === null
-    ? `${time.minMinutes} minutes`
-    : `${time.minMinutes}${EN_DASH}${time.maxMinutes} minutes`;
+  const isRange = time.maxMinutes !== null && time.maxMinutes > time.minMinutes;
+
+  return isRange
+    ? `${time.minMinutes}${EN_DASH}${time.maxMinutes} minutes`
+    : `${time.minMinutes} minutes`;
 }
 
 /**
