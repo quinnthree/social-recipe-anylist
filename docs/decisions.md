@@ -4,7 +4,7 @@ Architecture decisions for this project. Each entry states the decision, why it
 was made, and what it forbids. Superseding an accepted ADR requires explicit
 approval.
 
-Last updated: 2026-08-21.
+Last updated: 2026-08-24.
 
 ---
 
@@ -636,3 +636,148 @@ pragmatic bound on how long we hold uncertainty, not a proof. **Do not claim
 indefinite duplicate prevention.** True exactly-once protection remains
 impossible while AnyList exposes no native idempotency key — this policy narrows
 the window, it does not close it.
+
+---
+
+## ADR-026 — Consumer authentication is anonymous and installation-scoped
+
+**Status:** Accepted (2026-08-24). **Not implemented** — the contract is fixed
+in `contracts.md` Part 3 and no part of it exists in code. Completes the open
+question in ADR-014.
+
+**Decision.** The App Store client authenticates with an **anonymous,
+installation-scoped, server-minted opaque bearer credential**. On first launch
+it calls a public `POST /api/client/register`, the server mints a `clientId` and
+a 256-bit secret, and the client stores the resulting token
+`sr1_<clientId>_<secret>` in the iOS Keychain. The server stores only a SHA-256
+digest of the secret and verifies with a constant-time comparison. The
+credential is long-lived until revoked. `RECIPE_API_KEY` continues to work
+alongside it for CLI, smoke testing, and private tooling.
+
+**Why.** ADR-014 established that a shared secret in a distributed binary is
+extractable, unrevocable per user, and identifies nobody — and every screen of
+the iOS client now depends on a credential, so this had to be answered before
+broad distribution. Everything else in the design follows from choosing the
+smallest thing that gives us a *per-installation* identity we can revoke and
+meter:
+
+- **No account, no email, no password, no Apple ID.** The product's job is to
+  get a recipe into AnyList. An account would add a sign-up wall, a recovery
+  flow, and stored personal data in exchange for an identity the product does
+  not use.
+- **No client-supplied `installationId`.** It was the obvious shape and it is
+  wrong. An identifier that is transmitted but never proven cannot safely key
+  issuance: if presenting it reissues a credential, anyone who learns one can
+  knock that installation offline, which makes a value that "need not be
+  secret" into one that must be. The server mints the identity instead.
+- **No JWT.** There is no third party verifying these offline and no claims to
+  carry. A signed token would add key management and buy nothing a store lookup
+  does not already give us.
+- **An opaque token that carries its own lookup key.** The `clientId` half
+  makes verification one keyed read rather than a scan, and gives us a
+  non-secret identifier for logs, quotas, and revocation. `sr1_` versions the
+  format and gives secret scanners one rule.
+- **SHA-256, not a password KDF.** This is a 256-bit random secret with no
+  dictionary to resist, and a deliberately slow hash would tax every
+  authenticated request.
+- **No App Attest or DeviceCheck.** They raise the cost of mass registration
+  but do not stop an attacker with one real device, and they add attestation
+  verification, key lifecycle, and a dependency on Apple during onboarding.
+  Quotas and revocation bound the damage more directly and can be tuned
+  server-side. Recorded as future defence in depth if abuse demonstrates need.
+  Because inbound bodies are strict (ADR-024), adding an `attestation` field
+  later is a versioned change to the registration contract, not an addition.
+- **No rotation endpoint in V1.** Periodic rotation buys little against a
+  Keychain-stored secret and adds a renewal path that can fail. Revocation plus
+  re-registration covers the case that matters.
+
+**Consequences.**
+
+*Consumer authentication depends on Redis.* Every authenticated consumer
+request performs one keyed read. An unreachable store fails closed. A
+short-lived validation cache was considered and rejected: it would keep a
+revoked credential working for the length of its TTL, and immediate revocation
+was judged worth more than the saved round trip. This is authentication
+infrastructure and stores no recipe content, so it does not reopen the
+no-database scope decision any more than idempotency records did (ADR-017).
+
+*A lost registration response orphans a credential.* The request carries no
+identity, so the server cannot recognise a retry; the client retries and gets a
+second credential. This is accepted. Returning the same token would require
+storing the raw secret recoverably, which defeats hashing it. An orphan is a
+credential nobody holds and can never authenticate anything; it is cleaned up
+after 7 days if it never successfully authenticated, and registration limits
+bound how many can accumulate.
+
+*Cleanup by expiry is safe here, and that is not a contradiction of ADR-025.*
+There, a record vanishing would permit a second AnyList write solely because
+time passed, and the duplicate could not be removed. Here, a record vanishing
+costs an unused credential its existence and the client simply registers again.
+Nothing external happened and nothing is unrecoverable.
+
+*This is not device attestation.* Anonymous registration proves neither a human
+nor a genuine Apple device, and sybil registration is cheap by construction.
+Abuse is bounded by limits and revocation (ADR-027), not by identity. Do not
+describe it otherwise in any document.
+
+*The principal is the seam for what comes next.* Credential verification
+resolves to `internal` or `installation` with a `clientId`; handlers never see a
+token. Quotas, revocation, and any future attachment of an installation to a
+signed-in user hang off that principal without redesigning authentication.
+
+**Verification.** Recorded in full in `contracts.md` Part 3. The load-bearing
+cases: the raw secret is never stored; an unknown `clientId`, a wrong secret,
+and a revoked record each answer 401; `RECIPE_API_KEY` still authenticates every
+protected route; `/health` and the registration route are public and everything
+else is not; an unmatched path still answers `404 Not found` rather than 401; an
+unavailable store fails closed; and log redaction covers an installation token
+on every failure path, asserted against real emitted output.
+
+---
+
+## ADR-027 — Consumer traffic is metered, and `429` enters the contract
+
+**Status:** Accepted (2026-08-24). **Not implemented.** Extends the frozen error
+vocabulary in ADR-008.
+
+**Decision.** `429 Too many requests` becomes part of the API contract, with the
+existing envelope and a single fixed error string, `Too many requests`.
+Registration is limited per IP (5/hour, 20/day) and by a global per-minute
+circuit breaker. Consumer principals are metered per client: 20 imports/day and
+40 exports/day. Limits are server-side configuration, not constants in route
+logic. Internal `RECIPE_API_KEY` traffic does not inherit consumer quotas.
+
+**Why this is separate from ADR-026.** Authentication answers *who is calling*;
+metering answers *how much they may call*. They have different lifetimes: the
+quota numbers will move as real usage data arrives, while the credential model
+should not, and folding both into one ADR would mean amending the auth decision
+every time a limit changes. The 429 vocabulary is also independent of consumer
+auth — it would apply equally to any future internal limit.
+
+Registration is public and unauthenticated by necessity (an App Store client has
+no credential to present), so limits are the only thing standing between the
+endpoint and unbounded credential minting. The import quota is the one that
+matters financially: extraction is the only operation that spends money with a
+third party on an anonymous caller's behalf.
+
+**One error string, deliberately.** Registration limits and per-client quotas
+are met in different circumstances — onboarding versus daily use — so a client
+already knows which it hit from what it was doing. A second string would offer a
+distinction no client can act on differently, and the redaction rule stands
+regardless: the string is fixed and never explains which internal counter
+tripped.
+
+**Consequences.** Per-IP limiting is meaningless until proxy trust is configured
+correctly. On Vercel every request otherwise appears to come from the platform
+proxy, collapsing the per-IP bucket into one global bucket. Trust must be scoped
+to the platform hop: honouring arbitrary `X-Forwarded-For` values would let a
+caller choose their own bucket, which is worse than no limiting because it would
+look like it worked.
+
+The public registration route **must not be deployed before these controls
+exist** (M5E-B3). Shipping the endpoint first would put an unlimited credential
+mint on the internet.
+
+Quotas are enforced against the principal from ADR-026, so adding, changing, or
+removing a limit later touches configuration and one enforcement point rather
+than the authentication path.

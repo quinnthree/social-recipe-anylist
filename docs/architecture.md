@@ -2,7 +2,7 @@
 
 Status: describes the intended production shape. Where the current
 implementation differs, that is stated explicitly.
-Last updated: 2026-08-21.
+Last updated: 2026-08-24.
 
 ## Pipeline
 
@@ -120,6 +120,11 @@ They do **not** contain extraction logic, platform detection, recipe parsing,
 normalisation, AnyList knowledge, or AnyList credentials. A rule that decides
 what a recipe *is* belongs on the server, where it can be changed without an App
 Store release.
+
+The one secret a consumer build will hold is its **own** backend credential, in
+the Keychain — an installation-scoped token that authorises calls to this API and
+nothing else (ADR-026, **not yet implemented**). AnyList credentials remain
+server-side and are never within reach of the client.
 
 The Share Extension is thinner still. It runs under tight memory limits and can
 be killed mid-flight, so it does the minimum: capture the URL, hand off, get out.
@@ -248,6 +253,53 @@ Verified live 2026-08-24 against a real Upstash instance: `FAILED_SAFE` retry,
 `COMPLETED` replay returning `idempotent: true` with `originalRequestId` and the
 same saved AnyList ID and **no second recipe created**, and a same-key/changed-body
 replay returning `409 Idempotency key conflict`.
+
+## Authentication — APPROVED, NOT IMPLEMENTED
+
+Today there is exactly one credential: the static `RECIPE_API_KEY`, checked in
+constant time by an app-level `onRequest` hook against an allowlist of public
+paths (`/health` only). That is deny-by-default over registered routes, and it
+is all that exists.
+
+Consumer authentication is **decided and not built** (ADR-026, ADR-027;
+`contracts.md` Part 3). The shape it will take:
+
+**Two credential types, one header.** `RECIPE_API_KEY` continues to serve the
+CLI, smoke tests, and private tooling. Consumer builds carry an
+installation-scoped token, `sr1_<clientId>_<secret>`, minted by the server at
+first launch and stored in the iOS Keychain. The static key must never ship in a
+distributed binary (ADR-014).
+
+**A principal, not a token, reaches the application.** Verification resolves to
+either `internal` or `installation` with a public `clientId`. Route handlers
+never parse credentials and do not know which type authorised a request. That
+principal is the seam quotas, revocation, and any future user identity attach
+to, so adding a limit later does not touch the authentication path.
+
+**One new public route.** `POST /api/client/register` joins `/health` as the
+only unauthenticated path — an App Store client has no credential to present
+before it has one. This is the security-critical line of the change: the public
+allowlist is what deny-by-default is measured against.
+
+**Redis gains a second, narrower job.** Consumer verification is one keyed read
+of `client:v1:<clientId>`, holding a SHA-256 digest of the secret and never the
+secret itself. As with idempotency records, this is request infrastructure and
+not application storage — no recipe content lives there and the no-database
+scope decision is untouched (ADR-017). The practical consequence is real,
+though, and worth stating plainly: once consumer auth ships, an unreachable
+Redis fails **every** consumer request closed, where today only exports depend
+on it. Internal traffic skips the lookup entirely.
+
+**Abuse is bounded by metering, not by identity.** Registration is limited per
+IP and by a global circuit breaker; consumer principals are metered per client
+(ADR-027). Extraction is the only operation that spends money with a third party
+on an anonymous caller's behalf, which is why the import quota is the one that
+matters. Anonymous registration proves neither a human nor a genuine Apple
+device, and this document should not be read as claiming otherwise — App Attest
+is deliberately not a V1 requirement.
+
+Sequencing matters here: the public route is built last, after the token
+primitives, the store, and principal resolution are all testable (M5E-B1 → B3).
 
 ## Milestone 4 status — verified live
 

@@ -4,7 +4,7 @@ Status: **Milestone 4 complete and verified live.** The private Vercel smoke
 test passed end to end on 2026-08-24. Broad consumer release remains blocked by
 ADR-023.
 
-Last updated: 2026-08-21.
+Last updated: 2026-08-24.
 
 ## Where things stand
 
@@ -88,7 +88,8 @@ validation, typed AnyList errors, and Instagram redirect/interstitial hardening.
 - **The selective retry matrix is deferred** until upstream typed failure seams
   exist. Until then the conservative mapping in ADR-020 stands: only
   `login_failed` is `FAILED_SAFE`.
-- **Consumer authentication beyond the static bearer is future work** (ADR-014).
+- **Consumer authentication is designed and not built** (ADR-026, ADR-027;
+  `contracts.md` Part 3). Nothing is implemented — see "Phase 5E" below.
 - **YouTube ingestion**, and the **iOS app**.
 
 ### Blocking broad consumer release
@@ -100,7 +101,8 @@ redaction. On a deployed host that reaches platform logs. Private smoke testing
 with known-good credentials is acceptable; broad distribution is not, until this
 is mitigated.
 
-Consumer authentication (ADR-014) also remains an open contract decision — the
+Consumer authentication is **no longer an open decision** — it is designed and
+unimplemented (ADR-026). The constraint it was opened for still stands: the
 static `RECIPE_API_KEY` must not ship in an App Store binary.
 
 ## Completed: private Vercel smoke test
@@ -156,6 +158,43 @@ The `IdempotencyStore` conformance suite passes against the in-memory
 implementation. The Upstash implementation is covered only by the 28 skipped
 live-external tests. **Conformance is not proven for the store we will actually
 deploy** until those run against a live instance during the smoke test.
+
+## Phase 5E — consumer authentication (design only, 2026-08-24)
+
+**Documentation and contract only. No code exists.** No registration route is
+mounted, no consumer credential can be minted, and `RECIPE_API_KEY` remains the
+only credential the server accepts. Reading this section is not evidence of an
+implementation.
+
+Approved and written up in `contracts.md` Part 3, ADR-026, and ADR-027:
+
+- **Anonymous, installation-scoped, server-minted opaque bearer credentials.**
+  No account, no email, no password, no Apple ID, and no client-supplied
+  installation identifier — the server mints the identity.
+- Token `sr1_<clientId>_<secret>`; the server stores only a SHA-256 digest of
+  the secret and compares in constant time.
+- Long-lived until revoked. A credential that never authenticates is cleaned up
+  after 7 days.
+- `RECIPE_API_KEY` keeps working for CLI, smoke tests, and private tooling, and
+  skips the store lookup entirely.
+- `429 Too many requests` enters the contract, with one fixed error string.
+  Registration is limited per IP and globally; consumer principals are metered
+  per client (20 imports/day, 40 exports/day).
+- App Attest and DeviceCheck are **not** V1 requirements.
+
+Two consequences worth carrying into implementation. Consumer auth makes Redis
+a dependency of **every** consumer request rather than only exports, and it
+fails closed — that was chosen over a validation cache so revocation is
+immediate. And the public registration route **must not be deployed before the
+rate limits and quotas exist** (M5E-B3); the endpoint mints credentials to
+anyone who calls it.
+
+Sequencing: **M5E-B1** token primitives and store, **B2** principal
+authentication and legacy-key coexistence, **B3** public registration with
+proxy trust and limits, **B4** deploy and private smoke, **M5E-C** the iOS
+Keychain and bounded 401 recovery. The public route is built last, on purpose.
+
+**This does not unblock broad consumer release.** ADR-023 is a separate gate.
 
 ## Rules for all parallel agents
 
@@ -329,8 +368,9 @@ is **Production or manual** only.
 
 - **The YouTube enum source change awaits approval.** Written out exactly in
   `contracts.md`. Three touch points, one of which is a test that inverts.
-- **Consumer/user authentication** must be decided before broad distribution.
-  Not a Wave 1 blocker; Wave 1B must not harden around the static token.
+- **Consumer authentication is decided (ADR-026, ADR-027) and unimplemented.**
+  Building it is M5E-B. Until then the static token is the only credential, and
+  the iOS client must not harden around it.
 - **Whether an unimplemented-but-canonical platform deserves a distinct status
   code** (`501` rather than `400 Unsupported platform`). Separate contract
   change, not proposed.
