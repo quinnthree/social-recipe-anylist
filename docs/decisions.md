@@ -412,7 +412,7 @@ invalidates every stored fingerprint.
 
 ## ADR-019 — The acceptance gate is a deterministic minimum, not a confidence threshold
 
-**Status:** Accepted (2026-08-21). Amends ADR-009. **Implemented** in Milestone 4 at the shared import-service boundary (QA-003). See QA-025 in `handoff.md` for a known non-blocking gap.
+**Status:** Accepted (2026-08-21). Amends ADR-009. **Implemented** in Milestone 4 at the shared import-service boundary (QA-003). QA-025 (blank entries satisfying the gate) resolved 2026-08-24: entries are counted by meaning, not presence.
 
 **Decision.** `POST /api/imports` succeeds only when extraction yields a
 **non-blank title, at least one ingredient, and at least one instruction**.

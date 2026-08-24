@@ -232,36 +232,51 @@ describe("the minimum usable recipe gate (ADR-019, QA-003)", () => {
     expect(result.saved).not.toBeNull();
   });
 
-  it("QA-025: trims the title but counts blank ingredients and instructions", async () => {
-    // `isUsableRecipe` applies `.trim()` to the title and a bare `.length > 0`
-    // to the two arrays, so a recipe whose only instruction is "   " counts as
-    // usable and reaches the AnyList write.
-    //
-    // Literally contract-conformant — ADR-019 says "at least one instruction",
-    // and "   " is one — but not what "can a person actually cook from this"
-    // means. Recorded as current behaviour rather than asserted the other way,
-    // because tightening it is a contract decision, not a QA one. The same
-    // whitespace weakness is QA-023 at the schema level.
+  it("QA-025: a blank-only instruction no longer reaches the AnyList write", async () => {
+    // Was: `isUsableRecipe` counted array length, so "   " satisfied "at least
+    // one instruction" and the recipe reached the write. Now entries are
+    // counted by meaning, and this fails the gate before anything is saved.
     stubFetchFor(golden);
 
-    const result = await importRecipe(golden.url, {
+    const attempt = importRecipe(golden.url, {
       deps: deps({
         parseRecipe: async () => ({ ...recipe, instructions: ["   "] }),
-        createSaver: () => saverOk,
+        createSaver: () => {
+          throw new Error("the gate should have rejected this before any save");
+        },
       }),
     });
 
-    expect(result.saved).not.toBeNull();
+    await expect(attempt).rejects.toBeInstanceOf(ImportError);
+    await expect(attempt).rejects.toMatchObject({ kind: "extraction_failed" });
   });
 
-  it("QA-025: the same applies to a blank ingredient name", async () => {
+  it("QA-025: a blank-only ingredient name is rejected before any save", async () => {
+    stubFetchFor(golden);
+
+    const attempt = importRecipe(golden.url, {
+      deps: deps({
+        parseRecipe: async () => ({
+          ...recipe,
+          ingredients: [{ quantity: "1", unit: "cup", name: "   ", preparation: null, rawText: "1 cup" }],
+        }),
+        createSaver: () => {
+          throw new Error("the gate should have rejected this before any save");
+        },
+      }),
+    });
+
+    await expect(attempt).rejects.toMatchObject({ kind: "extraction_failed" });
+  });
+
+  it("QA-025: one meaningful entry among blanks still reaches the save", async () => {
     stubFetchFor(golden);
 
     const result = await importRecipe(golden.url, {
       deps: deps({
         parseRecipe: async () => ({
           ...recipe,
-          ingredients: [{ quantity: null, unit: null, name: "   ", preparation: null, rawText: "x" }],
+          instructions: ["   ", "Bake at 350F for 35-40 minutes.", "\t"],
         }),
         createSaver: () => saverOk,
       }),
@@ -270,9 +285,43 @@ describe("the minimum usable recipe gate (ADR-019, QA-003)", () => {
     expect(result.saved).not.toBeNull();
   });
 
-  it("does trim the title, so a blank title is rejected", async () => {
-    // The half that is handled, which is what makes the other half look like an
-    // oversight rather than a decision.
+  it("QA-025: the legacy one-shot path is held to the same gate", async () => {
+    // The whole point of ADR-019 living at the shared boundary: /api/import
+    // and /api/imports cannot diverge, because both call importRecipe.
+    stubFetchFor(golden);
+
+    const attempt = importRecipe(golden.url, {
+      deps: deps({
+        parseRecipe: async () => ({ ...recipe, instructions: ["  "] }),
+        createSaver: () => {
+          throw new Error("the legacy path must not write an unusable recipe");
+        },
+      }),
+    });
+
+    await expect(attempt).rejects.toMatchObject({ kind: "extraction_failed" });
+  });
+
+  it("QA-025: the same now applies to a blank ingredient name", async () => {
+    stubFetchFor(golden);
+
+    const attempt = importRecipe(golden.url, {
+      deps: deps({
+        parseRecipe: async () => ({
+          ...recipe,
+          ingredients: [{ quantity: null, unit: null, name: "   ", preparation: null, rawText: "x" }],
+        }),
+        createSaver: () => {
+          throw new Error("the gate should have rejected this before any save");
+        },
+      }),
+    });
+
+    await expect(attempt).rejects.toMatchObject({ kind: "extraction_failed" });
+  });
+
+  it("trims the title, so a blank title is rejected", async () => {
+    // Now consistent with the two array checks rather than the odd one out.
     stubFetchFor(golden);
     const kind = await kindOf(golden.url, {
       parseRecipe: async () => ({ ...recipe, title: "   " }),

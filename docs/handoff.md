@@ -68,27 +68,32 @@ Reminders from the frozen policy:
   atomic `NEW → IN_PROGRESS` claim and the stale-lease → `AMBIGUOUS` transition
   are the two behaviours worth deliberately provoking.
 
-## Open QA follow-ups
+## QA follow-ups
 
-### QA-025 — non-blocking
+### QA-025 — RESOLVED (2026-08-24)
 
-The minimum-usability gate (`isUsableRecipe`) trims the **title**, but counts
-`ingredients` and `instructions` **structurally**:
+The minimum-usability gate trimmed the **title** but counted `ingredients` and
+`instructions` **structurally**, so `instructions: ["   "]` satisfied it. The
+canonical schema's `min(1)` admits such strings, so extraction output could
+reach the gate in that shape.
+
+Fixed in `src/app/minimum-recipe.ts`: entries are now counted by meaning.
 
 ```ts
 recipe.title.trim().length > 0 &&
-recipe.ingredients.length > 0 &&
-recipe.instructions.length > 0
+recipe.ingredients.some((i) => i.name.trim().length > 0) &&
+recipe.instructions.some((s) => s.trim().length > 0)
 ```
 
-An entry that exists but is whitespace-only therefore still satisfies the gate —
-`instructions: ["   "]` passes. The canonical schema's `min(1)` admits such
-strings, so extraction output can reach the gate in that shape.
+**One** meaningful entry is sufficient — a list that is mostly blank but holds a
+real ingredient is still a recipe, and rejecting it would discard usable
+extractions. The check inspects and never rewrites: no trimmed value is written
+back and no field is normalised, so the recipe that passes is identical to the
+one that entered.
 
-Non-blocking: semantic non-blank validation (QA-023, ADR-024) already rejects
-these at the **consumer API inbound** boundary, so the exposure is extraction
-output, not client input, and it is a quality gap rather than a safety one. Fix
-by trimming entries before counting them.
+Because the gate lives at the shared import-service boundary (ADR-019, QA-003),
+the legacy `POST /api/import` and production `POST /api/imports` are held to it
+identically. Still not a confidence gate.
 
 ### Redis conformance is live-gated
 
