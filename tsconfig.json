@@ -11,6 +11,11 @@
     "target": "esnext",
     "lib": ["esnext"],
     "types": ["node"],
+    // Resolved relative to *this* file, not to whoever extends it. Vercel's
+    // Node builder transpiles by writing a tsconfig into a temp directory that
+    // extends this one, and the default typeRoots would then be searched from
+    // that temp directory — never reaching this project's node_modules/@types.
+    "typeRoots": ["./node_modules/@types"],
 
     // Other Outputs
     "sourceMap": true,

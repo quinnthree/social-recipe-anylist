@@ -249,6 +249,32 @@ describe("deployment entrypoint", () => {
     expect(pkg.dependencies["@anylist-napi/anylist-napi"]).toBe("1.1.1");
   });
 
+  it("resolves @types/node from a tsconfig that lives outside this project", () => {
+    // Vercel's Node builder transpiles by writing a tsconfig into a temp
+    // directory that `extends` ours. The default typeRoots are then searched
+    // from that temp directory, which never reaches this project's
+    // node_modules/@types, and the build fails with:
+    //   TS2688: Cannot find type definition file for 'node'
+    // An explicit typeRoots is resolved relative to the file that declares it,
+    // so it keeps pointing here no matter who extends it.
+    const tsconfig = readFileSync("tsconfig.json", "utf8");
+
+    expect(tsconfig).toMatch(/"typeRoots"\s*:\s*\[\s*"\.\/node_modules\/@types"\s*\]/);
+    expect(tsconfig).toMatch(/"types"\s*:\s*\[\s*"node"\s*\]/);
+  });
+
+  it("keeps the Node type definitions on the same major as the runtime", () => {
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+      devDependencies: Record<string, string>;
+      engines?: { node?: string };
+    };
+
+    // Types for a newer Node than we run would typecheck against APIs that are
+    // absent at runtime.
+    const runtimeMajor = pkg.engines?.node?.replace(/\D.*$/, "");
+    expect(pkg.devDependencies["@types/node"]).toMatch(new RegExp(`^\\^?${runtimeMajor}\\.`));
+  });
+
   it("keeps the Linux x64 gnu binary in the lockfile for a fresh Linux install", () => {
     const lock = JSON.parse(readFileSync("package-lock.json", "utf8")) as {
       packages: Record<string, unknown>;
