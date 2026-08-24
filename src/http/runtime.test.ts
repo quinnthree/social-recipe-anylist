@@ -9,6 +9,7 @@ import {
   MEMORY_STORE_WARNING,
   REDIS_REQUIRED,
   resolveHost,
+  redisCredentialSource,
   resolveIdempotencyStore,
   resolvePort,
 } from "./runtime.js";
@@ -68,7 +69,64 @@ describe("hasRedisConfiguration", () => {
   });
 });
 
+describe("redisCredentialSource", () => {
+  it("accepts the pair Vercel actually provisioned", () => {
+    // The deployed environment supplies UPSTASH_REDIS_REST_URL and
+    // UPSTASH_REDIS_REST_TOKEN. These exact names must keep resolving.
+    expect(
+      redisCredentialSource({
+        UPSTASH_REDIS_REST_URL: "https://x.upstash.io",
+        UPSTASH_REDIS_REST_TOKEN: "token",
+      }),
+    ).toBe("UPSTASH_REDIS_REST_*");
+  });
+
+  it("accepts the KV_ alias pair", () => {
+    expect(redisCredentialSource(REDIS)).toBe("KV_REST_API_*");
+  });
+
+  it("prefers KV_ when both are present, matching the per-variable lookup", () => {
+    expect(
+      redisCredentialSource({
+        ...REDIS,
+        UPSTASH_REDIS_REST_URL: "https://y.upstash.io",
+        UPSTASH_REDIS_REST_TOKEN: "other",
+      }),
+    ).toBe("KV_REST_API_*");
+  });
+
+  it("reports nothing when neither pair is complete", () => {
+    expect(redisCredentialSource({ UPSTASH_REDIS_REST_URL: "https://x.upstash.io" })).toBeNull();
+    expect(redisCredentialSource({})).toBeNull();
+  });
+
+  it("names both accepted pairs when refusing to deploy", () => {
+    // The operator who hits this needs to know which variables to set, and the
+    // provisioned pair is the UPSTASH_ one.
+    expect(REDIS_REQUIRED).toContain("UPSTASH_REDIS_REST_URL");
+    expect(REDIS_REQUIRED).toContain("KV_REST_API_URL");
+  });
+
+  it("ignores REDIS_URL, which the application does not use", () => {
+    expect(redisCredentialSource({ REDIS_URL: "redis://x" })).toBeNull();
+  });
+});
+
 describe("resolveIdempotencyStore", () => {
+  it("uses the UPSTASH_ pair on Vercel without falling back to memory", () => {
+    const store = resolveIdempotencyStore(
+      {
+        VERCEL: "1",
+        UPSTASH_REDIS_REST_URL: "https://x.upstash.io",
+        UPSTASH_REDIS_REST_TOKEN: "token",
+      },
+      () => undefined,
+    );
+
+    expect(store).toBeInstanceOf(LazyIdempotencyStore);
+    expect(store).not.toBeInstanceOf(MemoryIdempotencyStore);
+  });
+
   it("uses Redis when it is configured", () => {
     expect(resolveIdempotencyStore(REDIS, () => undefined)).toBeInstanceOf(LazyIdempotencyStore);
   });
@@ -215,17 +273,19 @@ describe("Vercel function configuration", () => {
 });
 
 describe("deployment entrypoint", () => {
-  it("starts the server by importing the local entrypoint", () => {
-    expect(readFileSync("src/app.ts", "utf8")).toContain('from "./server.js"');
+  it("builds through the shared factory rather than restating the wiring", () => {
+    // Both entrypoints call createServer(); only the local one listens.
+    expect(readFileSync("src/app.ts", "utf8")).toContain("createServer()");
+    expect(readFileSync("src/server.ts", "utf8")).toContain("createServer()");
   });
 
-  it("calls listen at module load, which is how Vercel detects the server", () => {
-    const server = readFileSync("src/server.ts", "utf8");
+  it("listens at module load in the local entrypoint only", () => {
+    const local = readFileSync("src/server.ts", "utf8");
 
-    expect(server).toContain("server.listen(");
-    // A `process.argv[1]` guard would make detection depend on how the file
-    // happened to be invoked.
-    expect(server).not.toContain("pathToFileURL");
+    expect(local).toContain(".listen(");
+    // A `process.argv[1]` guard would make `npm run server` depend on how the
+    // file happened to be invoked.
+    expect(local).not.toContain("pathToFileURL");
   });
 
   it("keeps the local scripts pointed at the same entrypoint", () => {

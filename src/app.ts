@@ -1,49 +1,74 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+
 import type { FastifyInstance } from "fastify";
 
-import { server } from "./server.js";
+import { createServer } from "./http/runtime.js";
 
 /**
- * The Vercel deployment entrypoint.
+ * The Vercel entrypoint.
  *
  * ## Why this file imports `fastify`
  *
- * Vercel does not choose a Fastify entrypoint by filename alone. `@vercel/fastify`
- * globs the candidates `app`, `index`, `server`, `src/app`, `src/index`,
- * `src/server` (× `js,cjs,mjs,ts,cts,mts`), **reads each one**, and takes the
- * first whose text matches:
+ * `@vercel/fastify` does not pick an entrypoint by filename. It globs the
+ * candidates `app`, `index`, `server`, `src/app`, `src/index`, `src/server`
+ * (× `js,cjs,mjs,ts,cts,mts`), **reads each one**, and takes the first whose
+ * text matches:
  *
  *     /(?:from|require|import)\s*(?:\(\s*)?["']fastify["']\s*(?:\))?/g
  *
- * If nothing matches, no Fastify entrypoint is found: the build falls back to a
- * generic Node project, which then expects an `api/` directory that this
- * repository deliberately does not have. Our Fastify instance is constructed in
- * `./http/server.ts`, so without the import below **no candidate file mentions
- * Fastify at all** and the deployment cannot come up.
+ * Our instance is constructed in `./http/server.ts`, so without the import
+ * below no candidate mentions Fastify and nothing is detected. The import is
+ * load-bearing, and it is not just a marker: `instance` is annotated with it,
+ * so the file stops compiling if `createServer()` ever returns something else.
+ * `src/http/runtime.test.ts` pins the rule using Vercel's own regex.
  *
- * The import is therefore load-bearing, not decorative — and it is not merely a
- * marker: the annotation on `app` fails to compile if `./server.ts` ever stops
- * producing a Fastify instance. `src/http/runtime.test.ts` pins the rule with
- * Vercel's own regex, so deleting this import as "unused" fails the suite
- * rather than the deploy.
+ * ## Why this file does not listen
  *
- * ## Why the entrypoint is here rather than in `./server.ts`
+ * Vercel's launcher captures a server by monkey-patching
+ * `http.Server.prototype.listen`, and that patch **swallows the first call** —
+ * it records the instance and returns without binding. A Fastify `listen()`
+ * racing that patch never sees its `listening` event, so the promise never
+ * settles and every request hangs. Exporting a request handler avoids the race
+ * completely: the launcher takes the function and never touches `listen`.
  *
- * Exactly one candidate must match, or the builder warns about multiple
- * entrypoints and the choice depends on a list order we do not control.
- * `src/index.ts` is the CLI and never calls `listen()`, so it must never be
- * selected; this file matching, and only this file, removes the ambiguity.
+ * `./server.ts` still listens, because that is what running locally needs.
+ * Nothing imports it from here, so there is no second listener.
  */
 
 /**
- * Read by `@vercel/node` via `@vercel/static-config`, which parses this exact
- * file. It must stay an object literal — the value is extracted statically, not
- * evaluated.
+ * Read by `@vercel/node` through `@vercel/static-config`, which parses this
+ * exact file. It must stay an object literal — the value is extracted
+ * statically, never evaluated.
  *
- * This is the only supported place to set the duration for a framework-detected
- * backend: a `functions` entry in `vercel.json` is validated against Serverless
- * Functions in `api/`, matches nothing here, and fails the build.
+ * This is the only supported place to set the duration for a
+ * framework-detected backend: a `functions` entry in `vercel.json` is validated
+ * against Serverless Functions in `api/` and fails the build.
  */
 export const config = { maxDuration: 120 };
 
-/** The running Fastify instance. Started by importing `./server.js`. */
-export const app: Promise<FastifyInstance> = server;
+/**
+ * Built once per instance, at module load, so route registration and the
+ * durable-store check happen during cold start rather than on the first
+ * request. A missing durable store on Vercel still throws here, exactly as
+ * before.
+ */
+const instance: FastifyInstance = createServer();
+
+/** Fastify must finish booting before `routing()` may be called. */
+const ready = instance.ready();
+
+/**
+ * The shape Vercel's launcher accepts: a plain `(req, res)` handler.
+ *
+ * `routing()` is Fastify's public request entry point, so this dispatches
+ * through the same router, hooks, and error handling that a listening server
+ * would — no route logic is duplicated or bypassed.
+ */
+export default async function handler(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  await ready;
+
+  instance.routing(request, response);
+}
