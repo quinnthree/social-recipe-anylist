@@ -44,11 +44,43 @@ export type ExtractionErrorCode =
   /** The right kind of URL, but the source text could not be obtained. */
   | "source_unavailable";
 
+/**
+ * A machine-readable diagnostic for *why* a source was unavailable, one level
+ * finer than `ExtractionErrorCode`.
+ *
+ * This exists so a production failure is diagnosable from telemetry alone. It
+ * is a closed vocabulary of our own strings — it never carries a response body,
+ * a header, a provider message, or any page content, so it is safe to log and
+ * safe to widen later.
+ *
+ * It deliberately does **not** reach the HTTP response body, which stays a
+ * fixed string chosen by status.
+ */
+export type ExtractionFailureReason =
+  /** Instagram served its login or interstitial page instead of a post. */
+  | "instagram_login_interstitial"
+  /** A redirect destination failed the host, scheme, or hop policy. */
+  | "instagram_redirect_rejected"
+  /** A post page with no usable Open Graph caption. */
+  | "instagram_missing_metadata"
+  /** The response resolved to a path that is never a post. */
+  | "instagram_non_post_response"
+  /** A non-redirect, non-2xx HTTP status. */
+  | "instagram_http_status"
+  /** The request timed out or the connection failed. */
+  | "instagram_timeout"
+  /** TikTok's oEmbed endpoint returned no usable caption. */
+  | "tiktok_missing_caption"
+  /** TikTok's oEmbed endpoint was unreachable or returned an unusable payload. */
+  | "tiktok_endpoint_unavailable";
+
 /** Thrown when a platform's source text cannot be obtained or is unusable. */
 export class ExtractionError extends Error {
   constructor(
     message: string,
     readonly code: ExtractionErrorCode,
+    /** Optional finer-grained diagnostic. Safe to log; never user or page content. */
+    readonly reason?: ExtractionFailureReason,
   ) {
     super(message);
     this.name = "ExtractionError";

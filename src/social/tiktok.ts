@@ -27,6 +27,7 @@ export const tiktokAdapter: SocialAdapter = {
       throw new ExtractionError(
         `Could not reach TikTok's oEmbed endpoint for ${url}: ${describe(cause)}`,
         "source_unavailable",
+        "tiktok_endpoint_unavailable",
       );
     }
 
@@ -35,6 +36,7 @@ export const tiktokAdapter: SocialAdapter = {
         `TikTok's oEmbed endpoint returned ${response.status} for ${url}. ` +
           `The post may be private, removed, or region-restricted.`,
         "source_unavailable",
+        "tiktok_endpoint_unavailable",
       );
     }
 
@@ -42,7 +44,11 @@ export const tiktokAdapter: SocialAdapter = {
     try {
       payload = await response.json();
     } catch {
-      throw new ExtractionError(`TikTok's oEmbed endpoint returned a non-JSON response for ${url}.`, "source_unavailable");
+      throw new ExtractionError(
+        `TikTok's oEmbed endpoint returned a non-JSON response for ${url}.`,
+        "source_unavailable",
+        "tiktok_endpoint_unavailable",
+      );
     }
 
     const parsed = OEmbedResponseSchema.safeParse(payload);
@@ -50,6 +56,7 @@ export const tiktokAdapter: SocialAdapter = {
       throw new ExtractionError(
         `TikTok's oEmbed response for ${url} did not match the expected shape.`,
         "source_unavailable",
+        "tiktok_endpoint_unavailable",
       );
     }
 
@@ -58,6 +65,7 @@ export const tiktokAdapter: SocialAdapter = {
       throw new ExtractionError(
         `TikTok returned no caption text for ${url}. There is nothing to extract a recipe from.`,
         "source_unavailable",
+        "tiktok_missing_caption",
       );
     }
 

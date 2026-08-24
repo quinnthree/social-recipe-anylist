@@ -47,13 +47,21 @@ describe("redirects are followed by hand, not by fetch", () => {
     expect(log.calls[0]?.init["redirect"]).toBe("manual");
   });
 
-  it("sends a browser-shaped User-Agent, which is what earns the Open Graph tags", async () => {
+  it("identifies itself as a crawler, which is what earns the Open Graph tags", async () => {
+    // Measured 2026-08-24: Instagram serves a JavaScript shell with no og:
+    // tags to a desktop-browser User-Agent, and full post metadata to a
+    // crawler-shaped one. A browser string here is the defect this asserts
+    // against; we also do not impersonate another company's crawler.
     const instagram = fixture("instagram-incomplete-caption");
     const log = stubFetchFor(instagram);
     await fetchSourceContent(instagram.url);
 
     const headers = log.calls[0]?.init["headers"] as Record<string, string> | undefined;
-    expect(headers?.["User-Agent"]).toContain("Mozilla/5.0");
+    const userAgent = headers?.["User-Agent"] ?? "";
+
+    expect(userAgent).toContain("SocialRecipeBot");
+    expect(userAgent).not.toContain("Mozilla/5.0");
+    expect(userAgent.toLowerCase()).not.toContain("facebookexternalhit");
   });
 
   it("makes exactly one request when nothing redirects", async () => {

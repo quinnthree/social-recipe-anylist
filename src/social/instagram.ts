@@ -1,6 +1,11 @@
 import { INSTAGRAM_DOMAIN, isWithinDomain } from "./hosts.js";
 import { readMetaContent } from "./meta.js";
-import { ExtractionError, type SocialAdapter, type SourceContent } from "./types.js";
+import {
+  ExtractionError,
+  type ExtractionFailureReason,
+  type SocialAdapter,
+  type SourceContent,
+} from "./types.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -19,11 +24,21 @@ const MAX_REDIRECTS = 3;
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+/**
+ * Instagram serves Open Graph tags to crawler-shaped requests only.
+ *
+ * Measured 2026-08-24 against a live Reel: a desktop-browser User-Agent — which
+ * this adapter previously sent — receives a JavaScript shell with **no `og:`
+ * tags at all** and `<title>Instagram</title>`, while a crawler-shaped or
+ * self-identifying agent receives the full post metadata. That is an upstream
+ * change; the browser string used to work, and the comment above it has always
+ * described the crawler behaviour we now actually rely on.
+ *
+ * We identify ourselves honestly rather than impersonating a browser or another
+ * company's crawler. It is the defensible choice and it is what works.
+ */
 const REQUEST_HEADERS: Record<string, string> = {
-  // Instagram serves Open Graph tags to crawler-shaped requests only.
-  "User-Agent":
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  "User-Agent": "SocialRecipeBot/1.0 (+https://github.com/quinnthree/social-recipe-anylist)",
   Accept: "text/html,application/xhtml+xml",
   "Accept-Language": "en-US,en;q=0.9",
 };
@@ -46,7 +61,7 @@ export const instagramAdapter: SocialAdapter = {
     const { response, finalUrl } = await fetchWithinPolicy(url);
 
     if (!response.ok) {
-      throw unavailable(`HTTP ${response.status}`);
+      throw unavailable(`HTTP ${response.status}`, "instagram_http_status");
     }
 
     const html = await response.text();
@@ -58,14 +73,19 @@ export const instagramAdapter: SocialAdapter = {
     // as something a creator wrote.
     const interstitial = interstitialReason(finalUrl, html, ogTitle, ogDescription);
     if (interstitial !== null) {
-      throw unavailable(`Instagram served a login or interstitial page (${interstitial})`);
+      throw unavailable(
+        `Instagram served a login or interstitial page (${interstitial.detail})`,
+        interstitial.reason,
+      );
     }
 
     const text = captionFrom(ogDescription);
     if (text === null) {
       throw unavailable(
-        "the response contained no usable og:description caption — " +
-          "this usually means Instagram served a login wall",
+        "the response carried no usable og:description caption. A desktop-browser " +
+          "User-Agent receives a JavaScript shell with no Open Graph tags; a login " +
+          "wall produces the same absence",
+        "instagram_missing_metadata",
       );
     }
 
@@ -79,8 +99,8 @@ export const instagramAdapter: SocialAdapter = {
   },
 };
 
-function unavailable(detail: string): ExtractionError {
-  return new ExtractionError(`${UNAVAILABLE} (${detail})`, "source_unavailable");
+function unavailable(detail: string, reason: ExtractionFailureReason): ExtractionError {
+  return new ExtractionError(`${UNAVAILABLE} (${detail})`, "source_unavailable", reason);
 }
 
 /**
@@ -111,7 +131,10 @@ async function fetchWithinPolicy(url: string): Promise<{ response: Response; fin
       });
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
-      throw unavailable(`request failed: ${detail}`);
+      throw unavailable(
+        `request failed: ${detail}`,
+        signal.aborted ? "instagram_timeout" : "instagram_redirect_rejected",
+      );
     }
 
     if (!REDIRECT_STATUSES.has(response.status)) {
@@ -121,12 +144,15 @@ async function fetchWithinPolicy(url: string): Promise<{ response: Response; fin
     void response.body?.cancel().catch(() => {});
 
     if (hop >= MAX_REDIRECTS) {
-      throw unavailable(`more than ${MAX_REDIRECTS} redirects`);
+      throw unavailable(`more than ${MAX_REDIRECTS} redirects`, "instagram_redirect_rejected");
     }
 
     const location = response.headers.get("location");
     if (location === null || location.trim().length === 0) {
-      throw unavailable(`HTTP ${response.status} redirect without a Location header`);
+      throw unavailable(
+        `HTTP ${response.status} redirect without a Location header`,
+        "instagram_redirect_rejected",
+      );
     }
 
     let resolved: URL;
@@ -136,13 +162,13 @@ async function fetchWithinPolicy(url: string): Promise<{ response: Response; fin
       // the host change it is.
       resolved = new URL(location, target);
     } catch {
-      throw unavailable(`a redirect pointed at a malformed Location`);
+      throw unavailable("a redirect pointed at a malformed Location", "instagram_redirect_rejected");
     }
 
     target = approvedTarget(resolved.href, { requireHttps: true });
 
     if (visited.has(target.href)) {
-      throw unavailable("the redirect chain looped");
+      throw unavailable("the redirect chain looped", "instagram_redirect_rejected");
     }
     visited.add(target.href);
   }
@@ -158,20 +184,29 @@ function approvedTarget(value: string, { requireHttps }: { requireHttps: boolean
   try {
     parsed = new URL(value);
   } catch {
-    throw unavailable("a URL in the redirect chain could not be parsed");
+    throw unavailable("a URL in the redirect chain could not be parsed", "instagram_redirect_rejected");
   }
 
   const allowedSchemes = requireHttps ? ["https:"] : ["https:", "http:"];
   if (!allowedSchemes.includes(parsed.protocol)) {
-    throw unavailable(`refused a non-HTTPS destination ("${parsed.protocol}")`);
+    throw unavailable(
+      `refused a non-HTTPS destination ("${parsed.protocol}")`,
+      "instagram_redirect_rejected",
+    );
   }
 
   if (parsed.username !== "" || parsed.password !== "") {
-    throw unavailable("refused a destination carrying embedded credentials");
+    throw unavailable(
+      "refused a destination carrying embedded credentials",
+      "instagram_redirect_rejected",
+    );
   }
 
   if (!isWithinDomain(parsed.hostname, INSTAGRAM_DOMAIN)) {
-    throw unavailable(`refused a destination outside Instagram ("${parsed.hostname}")`);
+    throw unavailable(
+      `refused a destination outside Instagram ("${parsed.hostname}")`,
+      "instagram_redirect_rejected",
+    );
   }
 
   return parsed;
@@ -222,8 +257,9 @@ const INTERSTITIAL_TEXT: readonly RegExp[] = [
 ];
 
 /**
- * Deterministic detection of a login wall or interstitial. Returns the reason
- * when the response is one, or null when it looks like a real post page.
+ * Deterministic detection of a login wall or interstitial. Returns a human
+ * detail plus a machine-readable reason when the response is one, or null when
+ * it looks like a real post page.
  *
  * Three independent signals, any of which is sufficient:
  *   1. the response came from a path that is never a post;
@@ -237,13 +273,18 @@ function interstitialReason(
   html: string,
   ogTitle: string | null,
   ogDescription: string | null,
-): string | null {
+): { detail: string; reason: ExtractionFailureReason } | null {
   if (INTERSTITIAL_PATH.test(finalUrl.pathname)) {
-    return `resolved to ${finalUrl.pathname}`;
+    // A path that is never a post is a different diagnosis from a login wall:
+    // it says the URL resolved somewhere else, not that we were blocked.
+    return { detail: `resolved to ${finalUrl.pathname}`, reason: "instagram_non_post_response" };
   }
 
   if (ogTitle !== null && INTERSTITIAL_TITLE.test(ogTitle.trim())) {
-    return "the page title is not a post title";
+    return {
+      detail: "the page title is not a post title",
+      reason: "instagram_login_interstitial",
+    };
   }
 
   const descriptions = [ogDescription, readMetaContent(html, "description")];
@@ -251,7 +292,10 @@ function interstitialReason(
     if (description === null) continue;
     const normalized = description.replace(/\s+/g, " ").trim();
     if (INTERSTITIAL_TEXT.some((pattern) => pattern.test(normalized))) {
-      return "the description metadata is Instagram's own interstitial copy";
+      return {
+        detail: "the description metadata is Instagram's own interstitial copy",
+        reason: "instagram_login_interstitial",
+      };
     }
   }
 

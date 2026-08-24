@@ -2,7 +2,11 @@ import type { AnyListErrorCode, RecipeSaver } from "../anylist/types.js";
 import { parseRecipe } from "../recipe/parser.js";
 import type { Recipe } from "../recipe/schema.js";
 import { fetchSourceContent } from "../social/index.js";
-import { ExtractionError, type SourceContent } from "../social/types.js";
+import {
+  ExtractionError,
+  type ExtractionFailureReason,
+  type SourceContent,
+} from "../social/types.js";
 import { withTimeout } from "./deadline.js";
 import { defaultExportDeps, ExportError, exportRecipe } from "./export-service.js";
 import { isUsableRecipe } from "./minimum-recipe.js";
@@ -23,6 +27,12 @@ export class ImportError extends Error {
   constructor(
     message: string,
     readonly kind: ImportFailureKind,
+    /**
+     * Optional machine-readable diagnostic carried up from the source adapter.
+     * Safe to log — a closed vocabulary of our own strings, never page content,
+     * headers, or a provider message. It never reaches the HTTP response body.
+     */
+    readonly reason?: ExtractionFailureReason,
   ) {
     super(message);
     this.name = "ImportError";
@@ -145,7 +155,7 @@ async function extract(
       "recipe extraction",
     );
   } catch (error) {
-    throw new ImportError(messageOf(error), classifyExtraction(error));
+    throw new ImportError(messageOf(error), classifyExtraction(error), reasonOf(error));
   }
 }
 
@@ -171,6 +181,13 @@ async function save(
 }
 
 /** Classifies on the social layer's code, never on message text. */
+/** Propagates an adapter's diagnostic without inventing one. */
+function reasonOf(error: unknown): ExtractionFailureReason | undefined {
+  if (error instanceof ImportError) return error.reason;
+  if (error instanceof ExtractionError) return error.reason;
+  return undefined;
+}
+
 function classifyExtraction(error: unknown): ImportFailureKind {
   // The gate already decided; do not reclassify it as an unknown failure.
   if (error instanceof ImportError) return error.kind;

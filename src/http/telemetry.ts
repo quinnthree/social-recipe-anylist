@@ -61,6 +61,13 @@ export interface ImportTelemetry {
   failed: boolean;
   failureStage: FailureStage | null;
   failureKind: string | null;
+  /**
+   * Machine-readable diagnostic from the source adapter, one level finer than
+   * `failureKind`. A closed vocabulary of our own strings — never page content,
+   * headers, cookies, or a provider message — so it is safe to log and never
+   * appears in an HTTP response body.
+   */
+  failureReason: string | null;
 }
 
 /** Accumulated across a request's phases, then emitted once. */
@@ -80,6 +87,7 @@ export interface TelemetryDraft {
   idempotencyState: string | null;
   failureStage: FailureStage | null;
   failureKind: string | null;
+  failureReason: string | null;
 }
 
 const TELEMETRY_ROUTES: readonly TelemetryRoute[] = [
@@ -110,6 +118,7 @@ export function newDraft(route: TelemetryRoute): TelemetryDraft {
     idempotencyState: null,
     failureStage: null,
     failureKind: null,
+    failureReason: null,
   };
 }
 
@@ -141,6 +150,7 @@ export function toTelemetry(
     failed: status >= 400,
     failureStage: draft.failureStage,
     failureKind: draft.failureKind,
+    failureReason: draft.failureReason,
   };
 }
 

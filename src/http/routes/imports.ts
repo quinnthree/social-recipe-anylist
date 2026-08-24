@@ -43,13 +43,24 @@ export function registerImportsRoute(server: FastifyInstance, context: RouteCont
       request.telemetry = draft;
       const requestId = request.id;
 
-      const reject = async (failure: FailureKind, kind: string = failure): Promise<void> => {
+      const reject = async (
+        failure: FailureKind,
+        kind: string = failure,
+        reason?: string,
+      ): Promise<void> => {
         draft.failureKind = kind;
         draft.failureStage = STAGE_BY_KIND[failure];
+        if (reason !== undefined) draft.failureReason = reason;
 
-        // The kind, never the error: a provider error can carry credentials.
+        // The kind and our own reason vocabulary, never the error: a provider
+        // error can carry credentials, and page content can carry the caption.
         request.log.warn(
-          { event: "extraction.failed", failureKind: kind, failureStage: draft.failureStage },
+          {
+            event: "extraction.failed",
+            failureKind: kind,
+            failureStage: draft.failureStage,
+            failureReason: draft.failureReason,
+          },
           "recipe extraction failed",
         );
 
@@ -109,8 +120,12 @@ export function registerImportsRoute(server: FastifyInstance, context: RouteCont
       } catch (error) {
         draft.extractionMs = elapsedMsSince(startedAt);
         const kind: ImportFailureKind = error instanceof ImportError ? error.kind : "internal";
+        const reason = error instanceof ImportError ? error.reason : undefined;
 
-        return reject(FAILURE_BY_KIND[kind], kind);
+        // A source failure happens before any SourceContent exists, so
+        // draft.sourcePlatform is still null. The reason vocabulary is
+        // platform-prefixed, which is what makes the failure diagnosable.
+        return reject(FAILURE_BY_KIND[kind], kind, reason);
       }
     },
   );
