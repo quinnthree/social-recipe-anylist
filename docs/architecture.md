@@ -244,16 +244,35 @@ After 30 days an `AMBIGUOUS` record is gone and the key becomes reusable, so
 duplicate prevention is **bounded, not indefinite**. AnyList exposes no native
 idempotency key, so exactly-once remains impossible; this narrows the window.
 
-## Milestone 4 status
+Verified live 2026-08-24 against a real Upstash instance: `FAILED_SAFE` retry,
+`COMPLETED` replay returning `idempotent: true` with `originalRequestId` and the
+same saved AnyList ID and **no second recipe created**, and a same-key/changed-body
+replay returning `409 Idempotency key conflict`.
 
-The production API described above is **implemented** (integration `065d9c6`,
-`integration/m4`): 1079 tests passing, 28 live-external tests intentionally
-skipped, typecheck clean.
+## Milestone 4 status — verified live
 
-**Live deployment verification is outstanding.** Nothing has run against a
-deployed Vercel environment or a live Upstash instance, so Redis conformance
-under real concurrency is unproven. The native stderr risk (ADR-023) remains
-unresolved and blocks broad consumer release.
+The production API described above is **implemented and verified against a
+deployed environment** (integration `d21432a`, `integration/m4`): 1132 tests
+passing, 28 live-external tests intentionally skipped, typecheck clean.
+
+**Live deployment verification passed on 2026-08-24.** A private Vercel smoke
+test exercised the platform (Node 22, Fastify handler, `src/app.ts` entrypoint,
+`GET /health` 200, `X-Request-Id`, region `iad1`, `maxDuration` 120), live
+TikTok and Instagram extraction through `POST /api/imports`, live Anthropic
+parsing, a live Upstash instance, and a real AnyList account including the
+native `@anylist-napi` binary loading on Vercel Linux. Full results in
+`handoff.md`.
+
+Three things that run remains silent on, stated so the pass is not read as more
+than it is:
+
+- **Concurrency.** The idempotency state machine was driven by hand, in
+  sequence. Atomicity under genuine concurrent claims is still unproven by
+  automation; the Upstash conformance suite stays live-gated.
+- **Failure paths.** The run used known-good credentials, deliberately, so the
+  native stderr leak (ADR-023) was never provoked. That is not a mitigation —
+  the risk is unchanged and still blocks broad consumer release.
+- **Scale.** One account, one region, sequential requests.
 
 ## Known gaps between this document and the code
 

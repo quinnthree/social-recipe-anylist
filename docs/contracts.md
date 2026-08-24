@@ -182,12 +182,15 @@ limits of the production API in Part 2, which addresses most of them.
 `integration/m4`): 1079 tests passing, 28 live-external tests intentionally
 skipped, typecheck clean.
 
-**Still outstanding: live deployment verification.** Nothing below has been
-exercised against a deployed Vercel environment or a live Upstash instance. The
-private Vercel smoke test is the next step. Implemented and tested is not the
-same as verified in production — in particular, Redis conformance is live-gated
-(see `handoff.md`) and the 28 skipped tests are exactly the ones that would
-exercise external systems.
+**Live deployment verification: PASSED (2026-08-24).** The private Vercel smoke
+test exercised every route below against a deployed environment, a live Upstash
+instance, live Anthropic parsing, and a real AnyList account. Details in
+`handoff.md`.
+
+Two qualifications remain. **Automated** Redis conformance is still live-gated —
+the smoke test proved the behaviour by hand, not by suite — and the native
+stderr risk (ADR-023) still blocks broad consumer release. Neither is a contract
+gap.
 
 ## Why split
 

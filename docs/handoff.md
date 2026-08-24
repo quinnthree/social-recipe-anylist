@@ -1,7 +1,8 @@
 # Handoff — Wave Plan
 
-Status: **Milestone 4 backend implementation complete; integration QA complete.**
-Next step is a private Vercel smoke test.
+Status: **Milestone 4 complete and verified live.** The private Vercel smoke
+test passed end to end on 2026-08-24. Broad consumer release remains blocked by
+ADR-023.
 
 Last updated: 2026-08-21.
 
@@ -9,13 +10,63 @@ Last updated: 2026-08-21.
 
 ### Integration state
 
-`065d9c6` — "Align QA suite with production backend", branch `integration/m4`.
+`d21432a` on `integration/m4`, with QA-025 resolved.
 
-- **1079 tests passing**, 0 failing
+- **1132 tests passing**, 0 failing
 - **28 intentionally skipped** live-external tests
-- typecheck clean, working tree clean, `origin/integration/m4` up to date
+- typecheck clean
 
-Independent QA recommendation: **READY FOR PRIVATE VERCEL SMOKE TEST.**
+### Live verification — PASSED (2026-08-24)
+
+Private Vercel smoke test. Everything below was observed against a deployed
+environment, not inferred from a local run.
+
+**Platform**
+
+- `integration/m4` deployed successfully
+- Node 22 runtime path works
+- Fastify default handler works
+- `src/app.ts` entrypoint works
+- `GET /health` returns 200
+- `X-Request-Id` present on responses
+- region `iad1` confirmed
+- `maxDuration` configured as 120 in `src/app.ts`
+
+**Extraction**
+
+- live TikTok `POST /api/imports` → 200 with a canonical Recipe
+- live Instagram `POST /api/imports` → 200, after the crawler User-Agent fix
+- live Anthropic parsing worked
+- request IDs and telemetry worked
+
+**Redis / idempotency**
+
+- `UPSTASH_REDIS_REST_*` selected live
+- a first AnyList login failure reached `FAILED_SAFE`
+- retry with the same key succeeded safely
+- `COMPLETED` replay returned `idempotent: true`, `originalRequestId`, and the
+  same saved AnyList ID
+- **no second AnyList recipe was created**
+- same key with a changed body → `409 Idempotency key conflict`
+
+This is the first evidence that the state machine behaves correctly against a
+real shared store rather than the in-memory one. Note what it does **not**
+establish: the transitions were exercised by hand, in sequence. Atomicity under
+genuine concurrency is still unproven — see the live-gated item below.
+
+**AnyList**
+
+- native `@anylist-napi` loaded successfully on Vercel Linux
+- login succeeded
+- `createRecipe` succeeded
+- post-save verification succeeded
+- the saved recipe ID was returned
+
+**Instagram**
+
+- a browser-shaped User-Agent no longer receives Open Graph metadata
+- the honest `SocialRecipeBot` crawler User-Agent restored it
+- redirect and interstitial security policy remained unchanged
 
 ### What is built
 
@@ -26,15 +77,18 @@ retention, request IDs, `schemaVersion`, the 409/413/415 error contract, the
 minimum-usability gate at the shared service boundary, semantic inbound
 validation, typed AnyList errors, and Instagram redirect/interstitial hardening.
 
-### What is not done
+### Remaining items — none blocking promotion
 
-- **Live deployment verification.** Nothing has run against a deployed Vercel
-  environment or a live Upstash instance. Implemented and tested is not verified
-  in production.
-- **Redis conformance is live-gated.** The `IdempotencyStore` conformance suite
-  passes against the in-memory implementation; the Upstash implementation is
-  exercised only by the skipped live-external tests. Atomicity under real
-  concurrency is unproven until the smoke test.
+- **Automated live Redis conformance is opt-in / live-gated.** The
+  `IdempotencyStore` conformance suite runs against the in-memory
+  implementation; the Upstash implementation is covered only by the 28 skipped
+  live-external tests. The smoke test proved the transitions by hand, in
+  sequence — **atomicity under genuine concurrency is still unproven by
+  automation.**
+- **The selective retry matrix is deferred** until upstream typed failure seams
+  exist. Until then the conservative mapping in ADR-020 stands: only
+  `login_failed` is `FAILED_SAFE`.
+- **Consumer authentication beyond the static bearer is future work** (ADR-014).
 - **YouTube ingestion**, and the **iOS app**.
 
 ### Blocking broad consumer release
@@ -49,12 +103,13 @@ is mitigated.
 Consumer authentication (ADR-014) also remains an open contract decision — the
 static `RECIPE_API_KEY` must not ship in an App Store binary.
 
-## Next step: private Vercel smoke test
+## Completed: private Vercel smoke test
 
-Deploy to a **private** Vercel environment and exercise the production routes
-end to end against a real Upstash instance and a real AnyList account.
+Ran 2026-08-24 against a private Vercel environment, a real Upstash instance,
+and a real AnyList account. Results above.
 
-Reminders from the frozen policy:
+The policy reminders it was run under, retained because they apply to every
+future live run:
 
 - Do **not** configure production `ANYLIST_EMAIL` / `ANYLIST_PASSWORD` in Vercel
   **Preview** environments. Preview may exercise extraction paths only; live
