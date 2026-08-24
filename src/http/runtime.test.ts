@@ -134,53 +134,89 @@ describe("LazyIdempotencyStore", () => {
 });
 
 /**
- * The deployment configuration is as load-bearing as the code, and it is not
- * exercised by anything else in the suite. These assertions are cheap and they
- * catch the mistakes that would only otherwise surface as a failed deploy.
+ * Vercel's own Fastify entrypoint detector, copied verbatim from
+ * `@vercel/fastify`'s call into `generateNodeBuilderFunctions`.
+ *
+ * The builder globs the candidates below, reads each file, and takes the
+ * **first whose text matches this regex**. Filename order alone decides
+ * nothing. Encoding the real rule here means a change that would break the
+ * deploy breaks the suite first.
  */
-describe("Vercel configuration", () => {
-  const config = JSON.parse(readFileSync("vercel.json", "utf8")) as {
-    framework?: string;
-    functions?: Record<string, { maxDuration?: number; includeFiles?: string }>;
-  };
+const FASTIFY_ENTRYPOINT = /(?:from|require|import)\s*(?:\(\s*)?["']fastify["']\s*(?:\))?/;
 
-  it("pins the Fastify framework rather than relying on inference", () => {
-    expect(config.framework).toBe("fastify");
+const CANDIDATE_PATHS = ["app", "index", "server", "src/app", "src/index", "src/server"].flatMap(
+  (name) => ["js", "cjs", "mjs", "ts", "cts", "mts"].map((ext) => `${name}.${ext}`),
+);
+
+function readIfPresent(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+describe("Vercel Fastify entrypoint detection", () => {
+  const matching = CANDIDATE_PATHS.filter((path) => {
+    const source = readIfPresent(path);
+    return source !== null && FASTIFY_ENTRYPOINT.test(source);
   });
 
-  it("requests a 120 second maximum duration for the entrypoint", () => {
-    for (const entry of Object.values(config.functions ?? {})) {
-      expect(entry.maxDuration).toBe(120);
-    }
+  it("has exactly one candidate that matches", () => {
+    // Zero matches means no Fastify entrypoint is found and the build falls
+    // back to expecting an `api/` directory. More than one makes the builder
+    // warn and pick by a list order we do not control.
+    expect(matching).toEqual(["src/app.ts"]);
   });
 
-  it("includes the AnyList native binary, which tracing must not drop", () => {
-    for (const entry of Object.values(config.functions ?? {})) {
-      expect(entry.includeFiles).toBe("node_modules/@anylist-napi/**");
-    }
+  it("does not let the CLI become the entrypoint", () => {
+    const cli = readIfPresent("src/index.ts") ?? "";
+
+    // src/index.ts is a candidate path and never calls listen(). It must not
+    // mention fastify, or it could be selected and the deployment would come up
+    // with no HTTP server.
+    expect(FASTIFY_ENTRYPOINT.test(cli)).toBe(false);
   });
 
-  it("covers the entrypoint Vercel will actually select", () => {
-    // Vercel checks src/app, then src/index, then src/server. src/index.ts is
-    // our CLI and never calls listen(), so src/app.ts claims the first slot.
-    expect(Object.keys(config.functions ?? {})).toContain("src/app.ts");
+  it("keeps fastify a direct dependency, which detection also requires", () => {
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+
+    expect(pkg.dependencies["fastify"]).toBeDefined();
+  });
+});
+
+describe("Vercel function configuration", () => {
+  const entrypoint = readFileSync("src/app.ts", "utf8");
+  const vercelConfig = JSON.parse(readFileSync("vercel.json", "utf8")) as Record<string, unknown>;
+
+  it("sets maxDuration in the entrypoint's static config", () => {
+    // `@vercel/node` reads `export const config` from the resolved entrypoint
+    // via `@vercel/static-config` and uses `maxDuration` for the function.
+    expect(entrypoint).toMatch(/export const config = \{ maxDuration: 120 \}/);
+  });
+
+  it("keeps that config an object literal, because it is parsed and not evaluated", () => {
+    expect(entrypoint).not.toMatch(/export const config = [A-Za-z_]/);
+  });
+
+  it("defines no `functions` block", () => {
+    // A `functions` pattern is validated against Serverless Functions in `api/`.
+    // For a framework-detected backend it matches nothing and fails the build
+    // with "doesn't match any Serverless Functions inside the `api` directory".
+    expect(vercelConfig["functions"]).toBeUndefined();
+  });
+
+  it("pins the framework and the region", () => {
+    expect(vercelConfig["framework"]).toBe("fastify");
+    expect(vercelConfig["regions"]).toEqual(["iad1"]);
   });
 });
 
 describe("deployment entrypoint", () => {
-  it("exists at the highest-priority location Vercel checks", () => {
-    const entry = readFileSync("src/app.ts", "utf8");
-
-    expect(entry).toContain('import "./server.js"');
-  });
-
-  it("duplicates no wiring: it only imports the local entrypoint", () => {
-    const entry = readFileSync("src/app.ts", "utf8");
-    const statements = entry
-      .split("\n")
-      .filter((line) => line.trim().length > 0 && !line.trim().startsWith("*") && !line.trim().startsWith("/*"));
-
-    expect(statements).toEqual(['import "./server.js";']);
+  it("starts the server by importing the local entrypoint", () => {
+    expect(readFileSync("src/app.ts", "utf8")).toContain('from "./server.js"');
   });
 
   it("calls listen at module load, which is how Vercel detects the server", () => {
@@ -218,6 +254,9 @@ describe("deployment entrypoint", () => {
       packages: Record<string, unknown>;
     };
 
+    // includeFiles is not available to a framework-detected backend, so the
+    // binary reaching the bundle depends on the lockfile resolving it and on
+    // node-file-trace following the loader's static requires.
     expect(lock.packages["node_modules/@anylist-napi/anylist-napi-linux-x64-gnu"]).toBeDefined();
   });
 });
