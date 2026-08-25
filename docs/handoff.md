@@ -159,15 +159,25 @@ implementation. The Upstash implementation is covered only by the 28 skipped
 live-external tests. **Conformance is not proven for the store we will actually
 deploy** until those run against a live instance during the smoke test.
 
-## Phase 5E — consumer authentication (B1–B2 built, no way to get a token)
+## Phase 5E — consumer authentication (B1–B3 built, nothing deployed)
 
-**Status as of 2026-08-25: installation tokens authenticate, and nobody can
-obtain one.**
+**Status as of 2026-08-25: the backend surface is complete and unverified in
+production.**
 
-There is no registration route and no public path beyond `/health`, so the only
-credential any real caller can present is still `RECIPE_API_KEY`. Consumer
-authentication is fully wired and entirely unreachable — which is the intended
-state until B3 adds the limits that make a public mint safe.
+`POST /api/client/register` exists in code and mints real credentials. Nothing
+has been deployed, no live registration has ever happened, and no iOS build
+uses any of it — that is M5E-C. The public paths are now `/health` and the
+registration route, and nothing else.
+
+Two things stand between this and a deployment, and neither is optional:
+
+1. **Live Redis conformance has not been run** for either the credential store
+   or the counter store. Passing in-process is not evidence about the stores
+   that would guard a public credential mint.
+2. **The client-address rule is unverified against the platform.** Per-IP
+   registration limits rest on reading a forwarded header correctly, and that
+   behaviour has only been reasoned about, not observed. The global ceiling
+   does not depend on it, which is why it exists.
 
 **M5E-B1 — implemented (branch `feature/m5e-auth-store`).**
 
@@ -218,10 +228,42 @@ revoked between the read and the touch fails, even though the read saw it
 active and the secret verified. That race is precisely what the store's
 atomicity exists to close, and the resolver defers to it.
 
-**Still unimplemented, in order:** public registration, proxy trust, rate
-limits, and quotas (B3); deployment and live smoke (B4); the iOS Keychain and
-bounded 401 recovery (M5E-C). No consumer iOS build can obtain a token until
-B3 ships.
+**M5E-B3 — implemented (branch `feature/m5e-auth-registration`).**
+
+- `POST /api/client/register`, public, strict single-field body. Every limit is
+  consumed **before** anything is minted, so a denied registration cannot leave
+  an orphan credential behind.
+- `src/ratelimit/` — fixed-window counters behind their own interface, separate
+  from credentials because the access patterns share nothing: durable hashed
+  records written rarely, versus disposable integers written on every request.
+- Registration is limited to 5/hour and 20/day per address with a 20/minute
+  global ceiling; consumer principals get 20 imports and 40 exports a day. All
+  configurable; internal `RECIPE_API_KEY` traffic inherits none of it.
+- `429 Too many requests`, one string for every limit.
+- `src/http/client-ip.ts` — an explicit address rule rather than Fastify's
+  `trustProxy`, taking the rightmost forwarded entry so a caller's invented
+  entries change nothing.
+
+Worth knowing before reading the code:
+
+**A quota counts requests served, not writes performed.** An idempotent export
+replay is charged like any other request. Simple and predictable, and it stops
+replays being a free channel; idempotency still decides how many AnyList
+recipes exist.
+
+**Everything fails closed.** A counter store that cannot answer is not
+permission: registration refuses with `500 Registration failed`, and a consumer
+request refuses through its route's ordinary 500. Internal traffic never
+touches those stores and is unaffected.
+
+**Still unimplemented:** deployment and live smoke (B4); the iOS Keychain and
+bounded 401 recovery (M5E-C).
+
+Before B4 both live suites must be run and reported:
+
+```
+QA_LIVE_EXTERNAL=1 npm test -- tests/live/
+```
 
 **Live Redis conformance has not been run.** The in-process suite passing is
 not evidence about the store that will be deployed — atomicity is structural in

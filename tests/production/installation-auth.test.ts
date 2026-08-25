@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { MemoryClientCredentialStore } from "../../src/client/memory-store.js";
 import type { ClientCredentialStore } from "../../src/client/store.js";
 import { buildToken, mintClientId, mintCredential, mintSecret } from "../../src/client/token.js";
+import { MemoryRateLimitStore } from "../../src/ratelimit/memory-store.js";
 import { buildServer } from "../../src/http/server.js";
 import { TEST_URL, validRecipe } from "../../src/test-support/fixtures.js";
 
@@ -29,6 +30,9 @@ function harness(store: ClientCredentialStore | undefined = new MemoryClientCred
   const app = buildServer({
     apiKey: API_KEY,
     clientStore: store,
+    // Consumer traffic is metered as of B3, so a store is part of what an
+    // installation request now needs to succeed.
+    rateLimitStore: new MemoryRateLimitStore(),
     extractRecipe: (async () => validRecipe) as never,
     logger: true,
     logDestination: {
@@ -288,18 +292,27 @@ describe("nothing else about the boundary moved", () => {
     expect(events).toHaveLength(1);
   });
 
-  it("has no registration route", async () => {
+  it("exposes registration, and nothing else, without a credential", async () => {
     const { app } = harness();
 
-    // B3 mounts this. Until then it must not exist, publicly or otherwise.
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/client/register",
-      headers: { "content-type": "application/json" },
-      payload: { schemaVersion: 1 },
-    });
+    const routes = [
+      { url: "/health", method: "GET" as const, public: true },
+      { url: "/api/client/register", method: "POST" as const, public: true },
+      { url: "/api/imports", method: "POST" as const, public: false },
+      { url: "/api/exports/anylist", method: "POST" as const, public: false },
+      { url: "/api/import", method: "POST" as const, public: false },
+    ];
 
-    expect(response.statusCode).toBe(404);
-    expect(response.json()).toMatchObject({ error: "Not found" });
+    for (const route of routes) {
+      const response = await app.inject({
+        method: route.method,
+        url: route.url,
+        headers: { "content-type": "application/json" },
+        ...(route.method === "POST" ? { payload: { schemaVersion: 1 } as never } : {}),
+      });
+
+      // Public routes may answer anything but 401; protected ones must not.
+      expect(response.statusCode === 401).toBe(!route.public);
+    }
   });
 });

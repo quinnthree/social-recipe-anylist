@@ -10,11 +10,15 @@ import {
 } from "../app/import-service.js";
 import type { ClientCredentialStore } from "../client/store.js";
 import { MemoryIdempotencyStore } from "../idempotency/memory-store.js";
+import type { RateLimitStore } from "../ratelimit/store.js";
 import { DEFAULT_LEASE_MS, type IdempotencyStore } from "../idempotency/store.js";
 import type { RouteContext } from "./context.js";
 import { failLegacy, failWith, FAILURES, kindForFastifyCode, type FailureKind } from "./errors.js";
+import { resolveIpStrategy, type ClientIpStrategy } from "./client-ip.js";
+import { consumerQuota, resolveLimits, type LimitPolicy } from "./limits.js";
 import { resolvePrincipal } from "./principal.js";
 import { resolveRequestId } from "./request-id.js";
+import { registerClientRegistrationRoute } from "./routes/client-register.js";
 import { registerExportRoute } from "./routes/exports-anylist.js";
 import { registerImportsRoute } from "./routes/imports.js";
 import { newDraft, STAGE_BY_KIND, telemetryRouteFor, toTelemetry } from "./telemetry.js";
@@ -40,7 +44,7 @@ const LEGACY_FAILURES: Record<ImportFailureKind, { status: number; error: string
  * deny-by-default: a route added tomorrow cannot end up public because of where
  * someone chose to mount it.
  */
-const PUBLIC_PATHS: ReadonlySet<string> = new Set(["/health"]);
+const PUBLIC_PATHS: ReadonlySet<string> = new Set(["/health", "/api/client/register"]);
 
 /**
  * Routes whose envelopes carry `requestId`.
@@ -50,7 +54,7 @@ const PUBLIC_PATHS: ReadonlySet<string> = new Set(["/health"]);
  * receives the `X-Request-Id` header, which is additive and cannot break a
  * client that does not read it.
  */
-const PRODUCTION_ROUTES = ["/api/imports", "/api/exports/anylist"];
+const PRODUCTION_ROUTES = ["/api/imports", "/api/exports/anylist", "/api/client/register"];
 
 export interface ServerDeps {
   /** Required. buildServer throws if this is missing or empty. */
@@ -73,6 +77,14 @@ export interface ServerDeps {
    * Requests carrying `RECIPE_API_KEY` never reach it.
    */
   clientStore?: ClientCredentialStore | undefined;
+  /**
+   * Counters for registration limits and consumer quotas (ADR-027). Absent
+   * means registration cannot be served and consumer quotas cannot be checked —
+   * both fail closed rather than becoming unlimited.
+   */
+  rateLimitStore?: RateLimitStore | undefined;
+  limits?: LimitPolicy;
+  ipStrategy?: ClientIpStrategy;
   now?: () => number;
   leaseMs?: number;
   logger?: boolean;
@@ -91,6 +103,9 @@ export function buildServer({
   exportRecipe: runExport = exportRecipe,
   idempotencyStore = new MemoryIdempotencyStore(),
   clientStore,
+  rateLimitStore,
+  limits = resolveLimits(process.env),
+  ipStrategy = resolveIpStrategy(process.env),
   now = Date.now,
   leaseMs = DEFAULT_LEASE_MS,
   logger = false,
@@ -210,6 +225,64 @@ export function buildServer({
     await respond(route, reply, kind, request.id);
   });
 
+  /**
+   * Consumer quotas (ADR-027).
+   *
+   * A second hook rather than more code in the first: this one runs only when
+   * the auth hook let the request through, because sending a reply from a hook
+   * ends the chain. `request.principal` being absent therefore means a public
+   * path, which is not metered.
+   *
+   * Charging happens here, before the handler and before anything expensive —
+   * an extraction that has not started has not cost anything, and a quota that
+   * only bites after the model call would not be protecting the thing it
+   * exists to protect.
+   */
+  server.addHook("onRequest", async (request, reply) => {
+    const principal = request.principal;
+
+    // Internal traffic is not metered. Consumer limits are about anonymous
+    // callers, and the operator's own key is not one.
+    if (principal === undefined || principal.kind === "internal") return;
+
+    const route = request.routeOptions.url;
+    if (route === undefined) return;
+
+    const quota = consumerQuota(limits, route, principal.clientId);
+    if (quota === null) return;
+
+    const fail = async (kind: FailureKind): Promise<void> => {
+      if (request.telemetry !== undefined) {
+        request.telemetry.failureKind = kind;
+        request.telemetry.failureStage = STAGE_BY_KIND[kind];
+      }
+      await respond(route, reply, kind, request.id);
+    };
+
+    if (rateLimitStore === undefined) {
+      request.log.error({ event: "quota.unavailable" }, "no rate limit store configured");
+      return fail("import_failed");
+    }
+
+    let permitted;
+    try {
+      permitted = await rateLimitStore.consume([quota], now());
+    } catch {
+      // Fail closed for consumer principals: a counter store that cannot answer
+      // is not permission.
+      request.log.error({ event: "quota.store_unavailable" }, "rate limit store failed");
+      return fail("import_failed");
+    }
+
+    if (!permitted.allowed) {
+      request.log.warn(
+        { event: "quota.exceeded", scope: quota.scope, clientId: principal.clientId },
+        "consumer quota exceeded",
+      );
+      return fail("rate_limited");
+    }
+  });
+
   // Exactly one telemetry event per request that reached a production or legacy
   // route. Emitted from a hook rather than from each exit path, so no early
   // return can silently skip it.
@@ -223,6 +296,14 @@ export function buildServer({
   // Unauthenticated. Proves the process is alive and nothing else — no
   // Anthropic, TikTok, Instagram, or AnyList calls.
   server.get("/health", async () => ({ status: "ok" }));
+
+  registerClientRegistrationRoute(server, {
+    clientStore,
+    rateLimitStore,
+    limits,
+    ipStrategy,
+    now,
+  });
 
   registerImportsRoute(server, context);
   registerExportRoute(server, context);

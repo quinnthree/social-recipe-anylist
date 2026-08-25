@@ -10,6 +10,15 @@ export const ImportsRequestSchema = z.strictObject({
   url: z.string().url(),
 });
 
+/**
+ * Registration carries a version and nothing else (ADR-026): no installation
+ * id, no device identifier, no attestation, no client-supplied secret. Strict,
+ * so a client that invents a field is told rather than silently ignored.
+ */
+export const RegisterRequestSchema = z.strictObject({
+  schemaVersion: z.literal(SUPPORTED_SCHEMA_VERSION),
+});
+
 export const ExportRequestSchema = z.strictObject({
   schemaVersion: z.literal(SUPPORTED_SCHEMA_VERSION),
   recipe: RecipeInputSchema,

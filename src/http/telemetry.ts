@@ -17,12 +17,17 @@ export type FailureStage =
   | "validation"
   | "platform"
   | "extraction"
+  | "quota"
   | "export"
   | "verification"
   | "deadline"
   | "internal";
 
-export type TelemetryRoute = "/api/imports" | "/api/exports/anylist" | "/api/import";
+export type TelemetryRoute =
+  | "/api/imports"
+  | "/api/exports/anylist"
+  | "/api/import"
+  | "/api/client/register";
 
 export type PrincipalKind = "internal" | "installation";
 
@@ -110,6 +115,11 @@ const TELEMETRY_ROUTES: readonly TelemetryRoute[] = [
   "/api/imports",
   "/api/exports/anylist",
   "/api/import",
+  // Registration carries no import fields, but it is a production route and
+  // the one-event-per-request guarantee is worth more than a tidy schema: a
+  // rate-limited mint attempt that left no trace is exactly the event worth
+  // watching.
+  "/api/client/register",
 ];
 
 /** Null for routes that carry no telemetry, such as `/health`. */
@@ -187,6 +197,8 @@ export const STAGE_BY_KIND: Record<FailureKind, FailureStage> = {
   invalid_url: "platform",
   unsupported_platform: "platform",
   extraction_failed: "extraction",
+  rate_limited: "quota",
+  registration_failed: "internal",
   idempotency_conflict: "export",
   export_in_progress: "export",
   export_outcome_unknown: "export",

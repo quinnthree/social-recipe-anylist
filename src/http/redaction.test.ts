@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { AnyListError } from "../anylist/types.js";
 import { MemoryClientCredentialStore } from "../client/memory-store.js";
 import { buildToken, hashSecret } from "../client/token.js";
+import { DEFAULT_LIMITS } from "./limits.js";
+import { MemoryRateLimitStore } from "../ratelimit/memory-store.js";
 import { ExportError } from "../app/export-service.js";
 import { ImportError } from "../app/import-service.js";
 import { exportBody, recipeWith, TEST_URL, validRecipe } from "../test-support/fixtures.js";
@@ -131,6 +133,60 @@ const CASES: Case[] = [
       payload: { schemaVersion: 1, url: TEST_URL },
     },
   },
+  {
+    name: "a successful registration",
+    request: {
+      method: "POST",
+      url: "/api/client/register",
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.9" },
+      payload: { schemaVersion: 1 } as never,
+    },
+  },
+  {
+    name: "a rate-limited registration",
+    request: {
+      method: "POST",
+      url: "/api/client/register",
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.9" },
+      payload: { schemaVersion: 1 } as never,
+    },
+    deps: {
+      apiKey: API_KEY,
+      limits: { ...DEFAULT_LIMITS, registrationGlobalMinute: 0 },
+    },
+  },
+  {
+    name: "a failing registration",
+    request: {
+      method: "POST",
+      url: "/api/client/register",
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.9" },
+      payload: { schemaVersion: 1 } as never,
+    },
+    deps: {
+      apiKey: API_KEY,
+      clientStore: {
+        create: () => Promise.reject(new Error(`store down for ${ANYLIST_PASSWORD}`)),
+        read: () => Promise.reject(new Error("store down")),
+        touch: () => Promise.reject(new Error("store down")),
+        revoke: () => Promise.reject(new Error("store down")),
+        deleteIfUnused: () => Promise.reject(new Error("store down")),
+      },
+    },
+  },
+  {
+    name: "a quota-limited installation request",
+    request: {
+      method: "POST",
+      url: "/api/imports",
+      headers: INSTALLATION_AUTH,
+      payload: { schemaVersion: 1, url: TEST_URL } as never,
+    },
+    deps: {
+      apiKey: API_KEY,
+      limits: { ...DEFAULT_LIMITS, importsPerClientDay: 0 },
+    },
+  },
   { name: "unknown route", request: { method: "GET", url: "/nope" } },
   { name: "health", request: { method: "GET", url: "/health" } },
   { name: "bad body", request: importsRequest({ nope: true }) },
@@ -246,6 +302,7 @@ function build(deps: Parameters<typeof buildServer>[0] | undefined): {
   const app = buildServer({
     apiKey: API_KEY,
     clientStore,
+    rateLimitStore: new MemoryRateLimitStore(),
     extractRecipe: (async () => validRecipe) as never,
     exportRecipe: (async () => ({ name: validRecipe.title, identifier: "id-1" })) as never,
     importRecipe: (async () => ({

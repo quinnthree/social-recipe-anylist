@@ -21,6 +21,8 @@ export type FailureKind =
   | "body_too_large"
   | "unsupported_content_type"
   | "extraction_failed"
+  | "rate_limited"
+  | "registration_failed"
   | "import_failed"
   | "export_failed"
   | "not_found";
@@ -39,6 +41,14 @@ export const FAILURES: Record<FailureKind, { status: number; error: string }> = 
   body_too_large: { status: 413, error: "Request body too large" },
   unsupported_content_type: { status: 415, error: "Unsupported content type" },
   extraction_failed: { status: 422, error: "Recipe could not be extracted" },
+  /**
+   * One string for every limit (ADR-027). Registration limits and per-client
+   * quotas are met in different circumstances — onboarding versus daily use —
+   * so a client already knows which it hit from what it was doing, and a second
+   * string would offer a distinction nobody can act on differently.
+   */
+  rate_limited: { status: 429, error: "Too many requests" },
+  registration_failed: { status: 500, error: "Registration failed" },
   import_failed: { status: 500, error: "Recipe import failed" },
   export_failed: { status: 500, error: "Recipe export failed" },
   not_found: { status: 404, error: "Not found" },

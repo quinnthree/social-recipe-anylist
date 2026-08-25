@@ -959,6 +959,26 @@ accepted: an unreachable store fails closed, and immediate revocation was
 preferred over a validation cache that would keep a revoked credential working
 for the length of its TTL.
 
+### An unreachable store is a 500, not a 401
+
+Two absences that look similar and are not:
+
+| Situation | Answer |
+|---|---|
+| No credential store configured — this deployment does not offer consumer auth | `401 Unauthorized` |
+| A configured store cannot answer | `500`, through the route's existing failure string |
+
+A 401 is a statement about the credential. An outage is a statement about us,
+and answering it with 401 would be actively harmful rather than merely
+imprecise: the client behaviour below treats 401 as *discard this credential
+and register again*, so a store blip answered with 401 would make every
+consumer app destroy a working credential and hit the registration endpoint in
+the same moment — losing the credentials and stampeding the mint at once.
+
+Neither answer reveals anything about the store. The 500 carries the route's
+ordinary failure string, so a caller learns that the request failed and nothing
+about why.
+
 ## Revocation
 
 The server can mark a record `revoked`. A revoked token authenticates as
@@ -976,7 +996,7 @@ are the approved starting points, not contract guarantees.
 | Limit | Scope | Value |
 |---|---|---|
 | Registration | per IP | 5/hour, 20/day |
-| Registration | global | configurable per-minute circuit breaker |
+| Registration | global | 20/minute (configurable circuit breaker) |
 | `POST /api/imports` | per client | 20/day |
 | `POST /api/exports/anylist` | per client | 40/day |
 
@@ -987,6 +1007,19 @@ decision rather than a side effect of this one.
 The import quota is the one that matters financially: extraction is the only
 operation that spends money with a third party on an anonymous caller's
 behalf.
+
+The global ceiling is set at **20 a minute**, which is roughly sixty times what
+a single address may register in a whole day — far above any legitimate burst,
+and low enough that a distributed attempt is capped rather than open. It is
+deliberately conservative for a product with no users yet, and should be raised
+against measured demand rather than pre-emptively.
+
+**A quota counts requests served, not writes performed.** An idempotent export
+replay consumes a unit like any other request: it is answered, so it is
+counted. That keeps the accounting predictable and stops repeated replays being
+a free channel, at the cost of one logical export costing two units if a client
+retries a completed one. Idempotency still governs how many AnyList recipes
+exist; the quota governs how many requests we serve.
 
 ### `429 Too many requests`
 
@@ -1010,7 +1043,23 @@ from the platform's proxy and the per-IP bucket becomes one global bucket.
 Trust must be scoped to the platform hop. Trusting arbitrary
 `X-Forwarded-For` values would let any caller choose their own rate-limit
 bucket, which is worse than not limiting at all, because it would look like it
-worked. Details land in M5E-B3.
+worked.
+
+**As implemented (M5E-B3):** the address is resolved explicitly rather than
+through Fastify's `trustProxy`, which would require asserting a hop count that
+cannot be verified from a development machine. The rule prefers
+`x-vercel-forwarded-for`, else takes the **rightmost** entry of
+`x-forwarded-for` — rightmost because the header grows left to right as each
+proxy appends, so the leftmost entry is whatever the caller claimed and the
+rightmost is what the last proxy observed. A caller's invented entries sit to
+the left of the platform's and change nothing.
+
+**This assumption is unverified against a deployed environment.** It holds if
+the platform appends to or replaces the header, and fails only for a proxy that
+forwards a client's header untouched — which no header-based rule survives.
+**M5E-B4 must confirm it against a real deployment** before the per-IP limit is
+treated as real. The global ceiling is deliberately independent of it, so a
+wrong answer here degrades attribution rather than removing the limit.
 
 ## Client recovery behaviour
 
