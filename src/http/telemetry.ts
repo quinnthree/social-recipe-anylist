@@ -17,12 +17,19 @@ export type FailureStage =
   | "validation"
   | "platform"
   | "extraction"
+  | "quota"
   | "export"
   | "verification"
   | "deadline"
   | "internal";
 
-export type TelemetryRoute = "/api/imports" | "/api/exports/anylist" | "/api/import";
+export type TelemetryRoute =
+  | "/api/imports"
+  | "/api/exports/anylist"
+  | "/api/import"
+  | "/api/client/register";
+
+export type PrincipalKind = "internal" | "installation";
 
 /**
  * One event per request. Counts and durations only — never captions, recipe
@@ -34,6 +41,18 @@ export interface ImportTelemetry {
   requestId: string;
   route: TelemetryRoute;
   status: number;
+
+  /**
+   * Which credential authenticated, and — for a consumer — which installation.
+   *
+   * Both are `null` until authentication has actually succeeded. An
+   * unauthenticated request must not report a clientId: the value would be
+   * whatever an unverified token claimed, and a rejected caller could plant
+   * anything in it.
+   */
+  principalKind: PrincipalKind | null;
+  /** Public by design (ADR-026). Never the token, the secret, or the digest. */
+  clientId: string | null;
 
   sourcePlatform: string | null;
   sourceType: string | null;
@@ -74,6 +93,8 @@ export interface ImportTelemetry {
 export interface TelemetryDraft {
   route: TelemetryRoute;
   startedAt: bigint;
+  principalKind: PrincipalKind | null;
+  clientId: string | null;
   sourcePlatform: string | null;
   sourceType: string | null;
   captionLength: number | null;
@@ -94,6 +115,11 @@ const TELEMETRY_ROUTES: readonly TelemetryRoute[] = [
   "/api/imports",
   "/api/exports/anylist",
   "/api/import",
+  // Registration carries no import fields, but it is a production route and
+  // the one-event-per-request guarantee is worth more than a tidy schema: a
+  // rate-limited mint attempt that left no trace is exactly the event worth
+  // watching.
+  "/api/client/register",
 ];
 
 /** Null for routes that carry no telemetry, such as `/health`. */
@@ -105,6 +131,8 @@ export function newDraft(route: TelemetryRoute): TelemetryDraft {
   return {
     route,
     startedAt: process.hrtime.bigint(),
+    principalKind: null,
+    clientId: null,
     sourcePlatform: null,
     sourceType: null,
     captionLength: null,
@@ -133,6 +161,8 @@ export function toTelemetry(
     requestId,
     route: draft.route,
     status,
+    principalKind: draft.principalKind,
+    clientId: draft.clientId,
     sourcePlatform: draft.sourcePlatform,
     sourceType: draft.sourceType,
     captionLength: draft.captionLength,
@@ -167,6 +197,8 @@ export const STAGE_BY_KIND: Record<FailureKind, FailureStage> = {
   invalid_url: "platform",
   unsupported_platform: "platform",
   extraction_failed: "extraction",
+  rate_limited: "quota",
+  registration_failed: "internal",
   idempotency_conflict: "export",
   export_in_progress: "export",
   export_outcome_unknown: "export",

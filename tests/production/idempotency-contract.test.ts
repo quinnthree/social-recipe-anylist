@@ -4,6 +4,8 @@ import { fingerprintOf } from "../../src/http/fingerprint.js";
 import { MemoryIdempotencyStore } from "../../src/idempotency/memory-store.js";
 import { RETENTION_SECONDS, storeKey } from "../../src/idempotency/store.js";
 import {
+  retentionModeFor,
+  TTL_TOLERANCE_SECONDS,
   isValidIdempotencyKey,
   KEY_MAX_LENGTH,
   mayCallCreateRecipe,
@@ -159,5 +161,49 @@ describe("what idempotency does not promise", () => {
     // ADR-021, RESEARCH-PROVEN: deleteRecipe() reports success without
     // deleting, which is why an ambiguous outcome refuses to retry.
     expect(REQUIRED_ACTION.ambiguous).not.toBe("EXECUTE");
+  });
+});
+
+
+/**
+ * Which half of the retention boundary a target proves.
+ *
+ * The in-process store can step past a window and watch a record vanish; Redis
+ * cannot, and asking it to was what produced the single live failure in
+ * M5E-B4. The capability is explicit so the difference is visible in the suite
+ * rather than absorbed by a skip.
+ */
+describe("retention verification is chosen by clock capability", () => {
+  const readTtlSeconds = async (): Promise<number> => 86_400;
+
+  it("verifies expiry against a logical clock by default", () => {
+    expect(retentionModeFor({})).toBe("logical");
+    expect(retentionModeFor({ supportsLogicalTimeTravel: true })).toBe("logical");
+  });
+
+  it("verifies the applied TTL when the clock cannot be advanced", () => {
+    expect(retentionModeFor({ supportsLogicalTimeTravel: false, readTtlSeconds })).toBe("ttl");
+  });
+
+  it("refuses a target that would verify retention in neither direction", () => {
+    // The gap this capability exists to prevent: without the guard, dropping
+    // the reader would silently stop verifying retention at all and the run
+    // would still report green.
+    expect(() => retentionModeFor({ supportsLogicalTimeTravel: false })).toThrow(
+      /must supply readTtlSeconds/,
+    );
+  });
+
+  it("ignores a reader it does not need", () => {
+    expect(retentionModeFor({ supportsLogicalTimeTravel: true, readTtlSeconds })).toBe("logical");
+  });
+
+  it("tolerates a round trip without tolerating a wrong value", () => {
+    const contracted = RETENTION_SECONDS.COMPLETED;
+
+    // Loose enough never to flake on network delay, far too tight to hide a
+    // materially different retention.
+    expect(TTL_TOLERANCE_SECONDS).toBeGreaterThan(0);
+    expect(TTL_TOLERANCE_SECONDS).toBeLessThan(contracted / 100);
   });
 });

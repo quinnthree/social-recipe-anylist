@@ -15,3 +15,19 @@ export function isAuthorized(header: string | undefined, secret: string): boolea
 
   return timingSafeEqual(provided, expected);
 }
+
+/**
+ * The credential from a `Bearer` header, or `null`.
+ *
+ * Held to exactly the strictness `isAuthorized` applies — same prefix, same
+ * case, no leading space tolerated — so the two paths cannot disagree about
+ * what counts as a well-formed header. Returns the value without inspecting it:
+ * deciding what the credential *is* belongs to the caller.
+ */
+export function readBearer(header: string | undefined): string | null {
+  if (header === undefined || !header.startsWith(BEARER)) return null;
+
+  const value = header.slice(BEARER.length);
+
+  return value.length === 0 ? null : value;
+}

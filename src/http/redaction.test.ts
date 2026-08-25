@@ -2,6 +2,10 @@ import type { FastifyInstance, InjectOptions } from "fastify";
 import { describe, expect, it } from "vitest";
 
 import { AnyListError } from "../anylist/types.js";
+import { MemoryClientCredentialStore } from "../client/memory-store.js";
+import { buildToken, hashSecret } from "../client/token.js";
+import { DEFAULT_LIMITS } from "./limits.js";
+import { MemoryRateLimitStore } from "../ratelimit/memory-store.js";
 import { ExportError } from "../app/export-service.js";
 import { ImportError } from "../app/import-service.js";
 import { exportBody, recipeWith, TEST_URL, validRecipe } from "../test-support/fixtures.js";
@@ -20,7 +24,28 @@ const ANTHROPIC_KEY = "sk-ant-LEAK-93hd8";
 const ANYLIST_TOKEN = "ANYLIST-TOKEN-ff02Nb";
 const IDEMPOTENCY_KEY = "IDEMPOTENCY-KEY-uu83Zt";
 
-const SECRETS = [API_KEY, ANYLIST_PASSWORD, ANTHROPIC_KEY, ANYLIST_TOKEN, IDEMPOTENCY_KEY];
+/**
+ * A consumer installation credential (ADR-026), fixed rather than minted so a
+ * match in a log line is unambiguous evidence of a leak.
+ *
+ * The clientId is deliberately **not** in `SECRETS`: it is public by design and
+ * is logged on purpose. The token, the secret, and the digest are not.
+ */
+const INSTALLATION_CLIENT_ID = Buffer.from("SR-CLIENT-ID-zz1").toString("base64url");
+const INSTALLATION_SECRET = Buffer.from("SR-INSTALL-SECRET-LEAKCHECK-4411").toString("base64url");
+const INSTALLATION_TOKEN = buildToken(INSTALLATION_CLIENT_ID, INSTALLATION_SECRET);
+const INSTALLATION_HASH = hashSecret(INSTALLATION_SECRET);
+
+const SECRETS = [
+  API_KEY,
+  ANYLIST_PASSWORD,
+  ANTHROPIC_KEY,
+  ANYLIST_TOKEN,
+  IDEMPOTENCY_KEY,
+  INSTALLATION_TOKEN,
+  INSTALLATION_SECRET,
+  INSTALLATION_HASH,
+];
 
 /**
  * A provider error of the shape the AnyList research workstream observed:
@@ -55,6 +80,11 @@ const AUTH = {
   "idempotency-key": IDEMPOTENCY_KEY,
 };
 
+const INSTALLATION_AUTH = {
+  authorization: `Bearer ${INSTALLATION_TOKEN}`,
+  "content-type": "application/json",
+};
+
 function importsRequest(payload: unknown): InjectOptions {
   return { method: "POST", url: "/api/imports", headers: AUTH, payload: payload as never };
 }
@@ -71,6 +101,90 @@ const CASES: Case[] = [
       url: "/api/imports",
       headers: { authorization: `Bearer wrong-${API_KEY}`, "content-type": "application/json" },
       payload: { schemaVersion: 1, url: TEST_URL },
+    },
+  },
+  {
+    name: "authenticated by an installation credential",
+    request: {
+      method: "POST",
+      url: "/api/imports",
+      headers: INSTALLATION_AUTH,
+      payload: { schemaVersion: 1, url: TEST_URL },
+    },
+  },
+  {
+    name: "a wrong installation secret",
+    request: {
+      method: "POST",
+      url: "/api/imports",
+      headers: {
+        authorization: `Bearer ${buildToken(INSTALLATION_CLIENT_ID, Buffer.from("WRONG-SECRET-LEAKCHECK-000000dead").toString("base64url"))}`,
+        "content-type": "application/json",
+      },
+      payload: { schemaVersion: 1, url: TEST_URL },
+    },
+  },
+  {
+    name: "a malformed installation token",
+    request: {
+      method: "POST",
+      url: "/api/imports",
+      headers: { authorization: `Bearer sr1_${INSTALLATION_SECRET}`, "content-type": "application/json" },
+      payload: { schemaVersion: 1, url: TEST_URL },
+    },
+  },
+  {
+    name: "a successful registration",
+    request: {
+      method: "POST",
+      url: "/api/client/register",
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.9" },
+      payload: { schemaVersion: 1 } as never,
+    },
+  },
+  {
+    name: "a rate-limited registration",
+    request: {
+      method: "POST",
+      url: "/api/client/register",
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.9" },
+      payload: { schemaVersion: 1 } as never,
+    },
+    deps: {
+      apiKey: API_KEY,
+      limits: { ...DEFAULT_LIMITS, registrationGlobalMinute: 0 },
+    },
+  },
+  {
+    name: "a failing registration",
+    request: {
+      method: "POST",
+      url: "/api/client/register",
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.9" },
+      payload: { schemaVersion: 1 } as never,
+    },
+    deps: {
+      apiKey: API_KEY,
+      clientStore: {
+        create: () => Promise.reject(new Error(`store down for ${ANYLIST_PASSWORD}`)),
+        read: () => Promise.reject(new Error("store down")),
+        touch: () => Promise.reject(new Error("store down")),
+        revoke: () => Promise.reject(new Error("store down")),
+        deleteIfUnused: () => Promise.reject(new Error("store down")),
+      },
+    },
+  },
+  {
+    name: "a quota-limited installation request",
+    request: {
+      method: "POST",
+      url: "/api/imports",
+      headers: INSTALLATION_AUTH,
+      payload: { schemaVersion: 1, url: TEST_URL } as never,
+    },
+    deps: {
+      apiKey: API_KEY,
+      limits: { ...DEFAULT_LIMITS, importsPerClientDay: 0 },
     },
   },
   { name: "unknown route", request: { method: "GET", url: "/nope" } },
@@ -174,8 +288,21 @@ function build(deps: Parameters<typeof buildServer>[0] | undefined): {
 } {
   let output = "";
 
+  // Seeded so the installation cases exercise a real successful verification
+  // rather than only the rejection path. `create` on the in-process store does
+  // its work synchronously — atomicity there is structural — so the record is
+  // present before the first request, and the assertion below pins that.
+  const clientStore = new MemoryClientCredentialStore();
+  void clientStore.create({
+    clientId: INSTALLATION_CLIENT_ID,
+    secretHash: INSTALLATION_HASH,
+    createdAt: Date.now(),
+  });
+
   const app = buildServer({
     apiKey: API_KEY,
+    clientStore,
+    rateLimitStore: new MemoryRateLimitStore(),
     extractRecipe: (async () => validRecipe) as never,
     exportRecipe: (async () => ({ name: validRecipe.title, identifier: "id-1" })) as never,
     importRecipe: (async () => ({
@@ -195,6 +322,19 @@ function build(deps: Parameters<typeof buildServer>[0] | undefined): {
 }
 
 describe("secret and log redaction", () => {
+  it("the installation cases really authenticate, so the leak checks mean something", async () => {
+    const { app } = build(undefined);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/imports",
+      headers: INSTALLATION_AUTH,
+      payload: { schemaVersion: 1, url: TEST_URL } as never,
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
   it.each(CASES.map((testCase) => [testCase.name, testCase] as const))(
     "leaks nothing on: %s",
     async (_name, testCase) => {
@@ -210,6 +350,8 @@ describe("secret and log redaction", () => {
       // The header itself, not just the token inside it.
       expect(written()).not.toContain("Bearer");
       expect(written()).not.toContain("set-cookie");
+      // The token parser must never echo what it rejected.
+      expect(written()).not.toContain("sr1_");
     },
   );
 

@@ -1,19 +1,21 @@
 # Contracts
 
-This document has two parts.
+This document has three parts.
 
 - **Part 1 — CURRENT** describes the original proof endpoint and CLI.
 - **Part 2 — IMPLEMENTED** describes the production API. As of Milestone 4 it is
   **built, tested, and merged** — it is no longer a proposal. What remains
   outstanding is **live deployment verification**, not implementation.
+- **Part 3 — APPROVED, NOT IMPLEMENTED** describes consumer authentication.
+  The decision is made and the contract is fixed; **none of it exists in code.**
 - **RESEARCH-PROVEN** marks measured findings from the AnyList and QA
   workstreams. These are observations about the world, not statements about our
   code. They appear inline where relevant and in full in `architecture.md`.
 
-Every claim in this document is tagged with one of those three. If something is
+Every claim in this document is tagged with one of those four. If something is
 untagged, treat it as CURRENT.
 
-Last updated: 2026-08-21.
+Last updated: 2026-08-24.
 
 ---
 
@@ -597,9 +599,11 @@ It **must not** become a universal secret embedded in a production App Store
 binary. A shared secret shipped in a client binary is extractable by anyone who
 downloads the app, and it identifies no one.
 
-Consumer/user authentication is a **future contract decision** that must be made
-before broad distribution. It is out of scope for Wave 1 and is not solved by
-anything in this document.
+Consumer authentication is **decided as of 2026-08-24 and not yet built.** V1
+uses anonymous, installation-scoped, server-minted opaque bearer credentials —
+see **Part 3**, and ADR-026. Until that is implemented, `RECIPE_API_KEY` remains
+the only credential the server accepts, and the constraint above is unchanged:
+it must not ship in a distributed binary.
 
 ## Telemetry
 
@@ -742,3 +746,415 @@ including the social `Platform` collapsing to the surviving subset.
 HTTP behaviour is unchanged by this work. No `501` was added; whether an
 unimplemented-but-canonical platform deserves a distinct status remains an
 unproposed contract change.
+
+---
+
+# Part 3 — APPROVED, NOT IMPLEMENTED (consumer authentication)
+
+**Status: approved 2026-08-24, and no part of it exists in code.** No
+registration route is mounted, no consumer credential can be minted, and
+`RECIPE_API_KEY` remains the only credential the server accepts. Everything
+below describes what M5E-B will build. Do not build against it as though it
+were live, and do not read the presence of this section as a deployment.
+
+The public registration route in particular **must not be exposed** before the
+rate limits and quotas in this section exist (M5E-B3). An unlimited public
+endpoint that mints credentials to anyone is a cost liability, not a feature.
+
+## Why this exists
+
+`RECIPE_API_KEY` cannot ship in an App Store binary (ADR-014). A shared secret
+in a distributed client is extractable by anyone who downloads the app, cannot
+be revoked for one user, and identifies nobody. Every screen of the iOS client
+now depends on a credential, so the alternative had to be decided before broad
+distribution.
+
+The decision is **anonymous, installation-scoped, server-minted opaque bearer
+credentials** (ADR-026). No account, no email, no password, no Apple ID.
+
+## Two credential types
+
+| Credential | Who holds it | Purpose |
+|---|---|---|
+| `RECIPE_API_KEY` | the operator | CLI, smoke tests, private tooling |
+| `sr1_…` installation token | one app installation | consumer traffic |
+
+Both arrive in the same `Authorization: Bearer` header. Both continue to work.
+The static key is **not** deprecated by this section — it stops being the thing
+a consumer build carries, which is a different statement.
+
+## `POST /api/client/register` — public
+
+The only route besides `GET /health` that requires no credential. It must not
+require `RECIPE_API_KEY`: an App Store client has no way to hold one.
+
+```
+POST /api/client/register
+Content-Type: application/json
+
+{ "schemaVersion": 1 }
+```
+
+The body carries **nothing else**. No `installationId`, no device name, no
+hardware identifier, no Apple ID, no attestation, and no client-supplied
+secret. Strict validation applies as everywhere else: unknown keys are
+rejected.
+
+**200**
+
+```json
+{
+  "success": true,
+  "schemaVersion": 1,
+  "requestId": "req_01J...",
+  "client": {
+    "id": "<clientId>",
+    "token": "sr1_<clientId>_<secret>"
+  }
+}
+```
+
+`client.id` is public and safe to log. `client.token` is a secret, is returned
+**only** at issuance, is never recoverable afterwards, and must never be
+logged — see "Logging" below.
+
+| Condition | Status | `error` |
+|---|---|---|
+| Malformed body, unknown keys, bad `schemaVersion` | 400 | `Invalid request body` |
+| Unsupported `schemaVersion` value | 400 | `Unsupported schema version` |
+| Registration rate limit exceeded | 429 | `Too many requests` |
+| Credential store unavailable, or anything unexpected | 500 | `Registration failed` |
+
+## Token format
+
+```
+sr1_<clientId>_<secret>
+```
+
+- `sr1_` — product and format version. A future format is `sr2_`, and a secret
+  scanner can be given one rule that matches every token we will ever issue.
+- `clientId` — 16 random bytes, base64url. **Public.** It is the store lookup
+  key, the operational log identifier, and the principal that quotas and
+  revocation are keyed on.
+- `secret` — 32 random bytes (256 bits), base64url, from a CSPRNG.
+
+Opaque, not a JWT. There is no third party verifying these offline, no claims
+to carry, and no expiry the server cannot enforce directly — a signed token
+would add key management in exchange for nothing. The id/secret split is what
+makes verification a single keyed lookup rather than a scan, and what gives us
+a non-secret identifier to put in logs.
+
+## Client record
+
+```
+client:v1:<clientId>          (Redis hash)
+
+  secretHash    SHA-256 hex of the secret component
+  status        "active" | "revoked"
+  createdAt     epoch ms
+  lastSeenAt    epoch ms — absent until the credential first authenticates
+  revokedAt     epoch ms — present only when revoked
+```
+
+**The raw secret is never stored.** Only its digest is, and verification is a
+constant-time comparison of digests, the same construction `isAuthorized`
+already uses for `RECIPE_API_KEY`. SHA-256 is the right primitive here and a
+password KDF would be the wrong one: this is a 256-bit random secret with no
+dictionary to resist, and a deliberately slow hash would tax every
+authenticated request.
+
+No `tokenVersion` field. It was considered and dropped: rotation is deferred
+(ADR-026), so nothing would read it, and a field with no reader is a field that
+drifts.
+
+This is **authentication infrastructure, not application data**. It stores no
+recipe, no caption, no user content, and it does not reopen the no-database
+scope decision any more than the idempotency records did (ADR-017). Anyone
+proposing to keep recipes here is proposing a scope change.
+
+## Credential lifetime
+
+**Long-lived until revoked.** No periodic expiry, no scheduled rotation, no
+refresh flow in V1.
+
+That is defensible because the credential is stored in the iOS Keychain rather
+than in application storage, authorises only recipe extraction and an export to
+the operator's own AnyList account, is revocable server-side at any time, and
+has a silent recovery path: a client that finds itself unauthenticated simply
+registers again. There is no account to lock anyone out of, so forced expiry
+would buy no safety and would add a renewal path that can fail.
+
+### Orphan cleanup
+
+A credential that has **never successfully authenticated a protected request**
+and is more than **7 days old** is eligible for cleanup. The observable is
+`lastSeenAt`: absent means the credential was minted and never used.
+
+The first successful authentication makes the record durable. From that point
+it survives until revoked or replaced.
+
+Note the contrast with idempotency retention (ADR-025), where expiry was
+explicitly forbidden as a signal. The reasoning does not transfer, and it is
+worth saying why rather than leaving it to look like an inconsistency. There,
+a record vanishing would let a second AnyList write happen solely because time
+passed, and the resulting duplicate could not be cleaned up. Here, a record
+vanishing costs an unused credential its existence; the only client that could
+ever have presented it re-registers and continues. Nothing external happened,
+and nothing is unrecoverable.
+
+## Registration retry, and the orphan tradeoff
+
+Because the request carries no installation identity, the server cannot
+recognise a retry. A response lost in transit therefore means the client
+retries and receives a **second** credential, and the first becomes an orphan.
+
+This is accepted deliberately. The alternatives are worse:
+
+- Returning the same token for a repeated registration would require storing
+  the raw secret in recoverable form, which defeats hashing it.
+- Keying issuance on a client-supplied `installationId` would make that
+  identifier a de facto secret. It is transmitted, not proven, so anyone who
+  learned one could force a reissue and knock that installation offline —
+  while the whole point of the identifier is that it need not be secret.
+
+An orphan is a credential nobody holds, so it can never authenticate anything.
+Orphan cleanup bounds how long it exists, and the registration rate limits
+bound how many can accumulate.
+
+## Authenticated principal
+
+Credential verification resolves to a principal, attached to the request:
+
+```
+internal      — the operator's RECIPE_API_KEY
+installation  — a consumer credential, carrying its public clientId
+```
+
+Route handlers do not parse credentials and do not know which type authorised
+the request. The principal is the seam that rate limits, quotas, revocation,
+and any future attachment of an installation to a signed-in user will hang
+from. No subscription tiers, no roles, no scopes in V1.
+
+## Resolution order on protected routes
+
+1. Parse the `Bearer` header. No header, or no `Bearer ` prefix → 401.
+2. Constant-time compare against `RECIPE_API_KEY`. A match resolves to the
+   **internal** principal and performs **no store lookup** — CLI and smoke
+   traffic pay none of the consumer path's latency.
+3. Otherwise, parse the `sr1_` format. A token that is not well formed → 401,
+   again without a store lookup.
+4. Read `client:v1:<clientId>`. Absent → 401.
+5. Require `status: "active"` and a constant-time match on the secret digest.
+6. Attach the **installation** principal, and record `lastSeenAt`.
+7. Anything else → the existing 401 behaviour, unchanged.
+
+`lastSeenAt` is written on the **first** successful authentication — which is
+what makes the record durable — and thereafter only when the stored value is
+more than a day stale. Writing it on every request would double the store cost
+of the hot path to keep a timestamp accurate to the second that nothing reads
+that precisely.
+
+Consumer authentication therefore depends on Redis being reachable. That is
+accepted: an unreachable store fails closed, and immediate revocation was
+preferred over a validation cache that would keep a revoked credential working
+for the length of its TTL.
+
+### An unreachable store is a 500, not a 401
+
+Two absences that look similar and are not:
+
+| Situation | Answer |
+|---|---|
+| No credential store configured — this deployment does not offer consumer auth | `401 Unauthorized` |
+| A configured store cannot answer | `500`, through the route's existing failure string |
+
+A 401 is a statement about the credential. An outage is a statement about us,
+and answering it with 401 would be actively harmful rather than merely
+imprecise: the client behaviour below treats 401 as *discard this credential
+and register again*, so a store blip answered with 401 would make every
+consumer app destroy a working credential and hit the registration endpoint in
+the same moment — losing the credentials and stampeding the mint at once.
+
+Neither answer reveals anything about the store. The 500 carries the route's
+ordinary failure string, so a caller learns that the request failed and nothing
+about why.
+
+## Revocation
+
+The server can mark a record `revoked`. A revoked token authenticates as
+invalid and its requests answer 401 like any other rejected credential — the
+distinction is operational, not client-facing. The record is kept rather than
+deleted so that revocation is an observable fact rather than an absence.
+
+No admin endpoint is part of M5E-B. Revocation is a store-level operation.
+
+## Rate limits and quotas
+
+Configurable server-side, not constants buried in route logic. The values below
+are the approved starting points, not contract guarantees.
+
+| Limit | Scope | Value |
+|---|---|---|
+| Registration | per IP | 5/hour, 20/day |
+| Registration | global | 20/minute (configurable circuit breaker) |
+| `POST /api/imports` | per client | 20/day |
+| `POST /api/exports/anylist` | per client | 40/day |
+
+Quotas apply to the **installation** principal. Internal `RECIPE_API_KEY`
+traffic does not inherit them; if it should ever be limited, that is a separate
+decision rather than a side effect of this one.
+
+The import quota is the one that matters financially: extraction is the only
+operation that spends money with a third party on an anonymous caller's
+behalf.
+
+The global ceiling is set at **20 a minute**, which is roughly sixty times what
+a single address may register in a whole day — far above any legitimate burst,
+and low enough that a distributed attempt is capped rather than open. It is
+deliberately conservative for a product with no users yet, and should be raised
+against measured demand rather than pre-emptively.
+
+**A quota counts requests served, not writes performed.** An idempotent export
+replay consumes a unit like any other request: it is answered, so it is
+counted. That keeps the accounting predictable and stops repeated replays being
+a free channel, at the cost of one logical export costing two units if a client
+retries a completed one. Idempotency still governs how many AnyList recipes
+exist; the quota governs how many requests we serve.
+
+### `429 Too many requests`
+
+New API vocabulary, approved 2026-08-24 (ADR-027). The envelope is unchanged:
+
+```json
+{ "success": false, "error": "Too many requests", "requestId": "req_..." }
+```
+
+**One string, deliberately.** Registration limits and per-client quotas are hit
+in completely different circumstances — onboarding versus daily use — so the
+client already knows which one it met from what it was doing. A second string
+would let a client branch on a distinction it cannot act on differently.
+
+### Proxy trust
+
+Per-IP limiting is meaningless on Vercel until the server is configured to read
+the forwarded client address. Without it, every request appears to originate
+from the platform's proxy and the per-IP bucket becomes one global bucket.
+
+Trust must be scoped to the platform hop. Trusting arbitrary
+`X-Forwarded-For` values would let any caller choose their own rate-limit
+bucket, which is worse than not limiting at all, because it would look like it
+worked.
+
+**As implemented (M5E-B3):** the address is resolved explicitly rather than
+through Fastify's `trustProxy`, which would require asserting a hop count that
+cannot be verified from a development machine. The rule prefers
+`x-vercel-forwarded-for`, else takes the **rightmost** entry of
+`x-forwarded-for` — rightmost because the header grows left to right as each
+proxy appends, so the leftmost entry is whatever the caller claimed and the
+rightmost is what the last proxy observed. A caller's invented entries sit to
+the left of the platform's and change nothing.
+
+**This assumption is unverified against a deployed environment.** It holds if
+the platform appends to or replaces the header, and fails only for a proxy that
+forwards a client's header untouched — which no header-based rule survives.
+**M5E-B4 must confirm it against a real deployment** before the per-IP limit is
+treated as real. The global ceiling is deliberately independent of it, so a
+wrong answer here degrades attribution rather than removing the limit.
+
+## Client recovery behaviour
+
+Normative for the iOS client (M5E-C), stated here because it is the client half
+of the 401 contract:
+
+```
+launch → read the credential from the Keychain
+       → absent? register once, store it, continue
+401 on a protected route
+       → discard the stored credential
+       → register once
+       → retry the original request once
+       → a second 401 stops, and surfaces an authentication failure
+```
+
+The cap of one re-registration per session is what prevents a misconfigured or
+failing server from turning every client into a registration loop. The client
+cannot distinguish a revoked credential from a server misconfiguration on the
+wire, and does not need to: one attempt resolves the first case and fails
+safely in the second.
+
+## Logging
+
+Consumer bearer tokens are secrets and are subject to the same non-negotiable
+rule as every other credential in this document. They must never appear in
+request logs, response logs, telemetry, exception metadata, analytics, or
+debug output.
+
+The existing structural Pino redaction of `req.headers.authorization` already
+covers an installation token arriving on a request. What is new is a token in a
+**response**: the registration route is the only place a raw secret is ever
+produced, and that object must not reach a log line. The registration route
+logs `clientId` and nothing else about the credential.
+
+`clientId` is not a secret and is the intended operational identifier — in
+telemetry, in log lines, and in support conversations.
+
+## What this is not
+
+Anonymous installation registration proves neither a human nor a genuine Apple
+device. It establishes that a credential was minted and is being presented
+consistently, and nothing more. Sybil registration is cheap by construction.
+
+Abuse is bounded by registration IP limits, per-client quotas, the global
+circuit breaker, revocation, and cost instrumentation — not by identity. App
+Attest and DeviceCheck are **not** required for V1 (ADR-026) and are recorded
+as future defence in depth if abuse demonstrates the need.
+
+**Do not describe this as device attestation.** It is not, and a document other
+people build against should not imply a guarantee it does not provide.
+
+## Implementation verification plan
+
+M5E-B is not complete until each of these is covered:
+
+- token mint, parse, and hash — including that a malformed token is rejected
+  before any store lookup
+- the raw secret is never written to the store; only its digest is
+- a valid installation token authenticates a protected route
+- an unknown `clientId` → 401
+- a correct `clientId` with a wrong secret → 401
+- a revoked credential → 401
+- `RECIPE_API_KEY` still authenticates every protected route
+- `GET /health` remains public
+- `POST /api/client/register` is public and works without any credential
+- every other route remains protected, and an unmatched path still answers
+  `404 Not found` rather than 401
+- registration rate limits and per-client quotas enforce, and answer
+  `429 Too many requests`
+- quota keying is per IP for registration and per client for protected routes
+- a lost registration response leaves the client able to recover, and the
+  orphan is cleaned up
+- log redaction covers an installation token on every failure path, asserted
+  against real emitted output as the existing redaction suite does
+- an unavailable credential store fails closed rather than open
+
+The store gets a conformance suite run against both an in-memory and a Redis
+implementation, mirroring `IdempotencyStore`. Note the standing caveat: the
+Upstash half of that pattern is currently live-gated, so the same gap will
+apply here unless it is addressed.
+
+## Sequencing
+
+| Milestone | Scope |
+|---|---|
+| M5E-B1 | token primitives, client store, tests |
+| M5E-B2 | principal authentication, `RECIPE_API_KEY` coexistence, telemetry and redaction |
+| M5E-B3 | public registration, proxy trust, rate limits, quotas |
+| M5E-B4 | deploy, private live smoke verification |
+| M5E-C | iOS Keychain registration, installation auth, bounded 401 recovery |
+
+B1 and B2 build and test the whole mechanism before anything is publicly
+reachable. The public endpoint is deliberately last.
+
+**None of this unblocks broad consumer release on its own.** ADR-023 — native
+`set-cookie` leakage to stderr on failed AnyList login — remains unresolved and
+is a separate gate.

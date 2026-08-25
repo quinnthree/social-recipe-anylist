@@ -4,7 +4,7 @@ Status: **Milestone 4 complete and verified live.** The private Vercel smoke
 test passed end to end on 2026-08-24. Broad consumer release remains blocked by
 ADR-023.
 
-Last updated: 2026-08-21.
+Last updated: 2026-08-25.
 
 ## Where things stand
 
@@ -88,7 +88,8 @@ validation, typed AnyList errors, and Instagram redirect/interstitial hardening.
 - **The selective retry matrix is deferred** until upstream typed failure seams
   exist. Until then the conservative mapping in ADR-020 stands: only
   `login_failed` is `FAILED_SAFE`.
-- **Consumer authentication beyond the static bearer is future work** (ADR-014).
+- **Consumer authentication is designed and not built** (ADR-026, ADR-027;
+  `contracts.md` Part 3). Nothing is implemented — see "Phase 5E" below.
 - **YouTube ingestion**, and the **iOS app**.
 
 ### Blocking broad consumer release
@@ -100,7 +101,8 @@ redaction. On a deployed host that reaches platform logs. Private smoke testing
 with known-good credentials is acceptable; broad distribution is not, until this
 is mitigated.
 
-Consumer authentication (ADR-014) also remains an open contract decision — the
+Consumer authentication is **no longer an open decision** — it is designed and
+unimplemented (ADR-026). The constraint it was opened for still stands: the
 static `RECIPE_API_KEY` must not ship in an App Store binary.
 
 ## Completed: private Vercel smoke test
@@ -156,6 +158,276 @@ The `IdempotencyStore` conformance suite passes against the in-memory
 implementation. The Upstash implementation is covered only by the 28 skipped
 live-external tests. **Conformance is not proven for the store we will actually
 deploy** until those run against a live instance during the smoke test.
+
+## Phase 5E — consumer authentication (B1–B3 built, nothing deployed)
+
+**Status as of 2026-08-25: the backend surface is complete and unverified in
+production.**
+
+`POST /api/client/register` exists in code and mints real credentials. Nothing
+has been deployed, no live registration has ever happened, and no iOS build
+uses any of it — that is M5E-C. The public paths are now `/health` and the
+registration route, and nothing else.
+
+Two things stand between this and a deployment, and neither is optional:
+
+1. **Live Redis conformance has not been run** for either the credential store
+   or the counter store. Passing in-process is not evidence about the stores
+   that would guard a public credential mint.
+2. **The client-address rule is unverified against the platform.** Per-IP
+   registration limits rest on reading a forwarded header correctly, and that
+   behaviour has only been reasoned about, not observed. The global ceiling
+   does not depend on it, which is why it exists.
+
+**M5E-B1 — implemented (branch `feature/m5e-auth-store`).**
+
+- `src/client/token.ts` — minting, strict parsing, SHA-256 hashing, and
+  constant-time verification for `sr1_<clientId>_<secret>`.
+- `src/client/store.ts` — the `ClientCredentialStore` interface and the record
+  model, plus the retention and refresh constants.
+- `src/client/memory-store.ts` — in-process implementation, held to the same
+  semantics as Redis rather than a looser approximation.
+- `src/client/redis-store.ts` — Lua-backed implementation on the approved
+  `client:v1:<clientId>` namespace.
+- `tests/production/client-credential-contract.ts` — one conformance suite,
+  run against the in-process store in normal CI and against real Upstash under
+  the live gate.
+
+One implementation detail is worth carrying forward because it is easy to get
+wrong: **token parsing is positional, not delimiter-split.** `_` is a member of
+the base64url alphabet, so roughly a third of minted tokens contain the
+separator inside a component. Both components are fixed length, so position
+resolves what splitting cannot. The approved format is unchanged.
+
+**M5E-B2 — implemented (branch `feature/m5e-auth-principal`).**
+
+- `src/http/principal.ts` — resolves an `Authorization` header to
+  `{ kind: "internal" }` or `{ kind: "installation", clientId }`. The internal
+  key is checked first and never reaches the store; a malformed installation
+  token is rejected before a lookup rather than after one.
+- The existing `onRequest` hook attaches the principal. **No handler was
+  changed**, and none parses a credential.
+- `src/client/lazy-store.ts` and `resolveClientCredentialStore()` wire Redis in
+  through the same pattern the idempotency store uses. There is deliberately no
+  in-memory fallback for production: absent a store, a well-formed installation
+  token is *refused*, never accepted.
+- Telemetry carries `principalKind` and, for a consumer, the public `clientId`
+  — both `null` until authentication has actually succeeded, so a rejected
+  caller cannot plant an identity in our telemetry.
+
+Two behaviours worth knowing before reading the code:
+
+**A store that cannot answer returns 500, not 401.** Unknown, wrong, and
+revoked credentials are externally indistinguishable 401s, as the contract
+requires. An outage is a different statement — and answering it with 401 would
+tell every consumer client to discard a working credential and register again,
+destroying credentials and stampeding registration at the same moment.
+
+**The atomic `touch` is the final authority on revocation.** A credential
+revoked between the read and the touch fails, even though the read saw it
+active and the secret verified. That race is precisely what the store's
+atomicity exists to close, and the resolver defers to it.
+
+**M5E-B3 — implemented (branch `feature/m5e-auth-registration`).**
+
+- `POST /api/client/register`, public, strict single-field body. Every limit is
+  consumed **before** anything is minted, so a denied registration cannot leave
+  an orphan credential behind.
+- `src/ratelimit/` — fixed-window counters behind their own interface, separate
+  from credentials because the access patterns share nothing: durable hashed
+  records written rarely, versus disposable integers written on every request.
+- Registration is limited to 5/hour and 20/day per address with a 20/minute
+  global ceiling; consumer principals get 20 imports and 40 exports a day. All
+  configurable; internal `RECIPE_API_KEY` traffic inherits none of it.
+- `429 Too many requests`, one string for every limit.
+- `src/http/client-ip.ts` — an explicit address rule rather than Fastify's
+  `trustProxy`, taking the rightmost forwarded entry so a caller's invented
+  entries change nothing.
+
+Worth knowing before reading the code:
+
+**A quota counts requests served, not writes performed.** An idempotent export
+replay is charged like any other request. Simple and predictable, and it stops
+replays being a free channel; idempotency still decides how many AnyList
+recipes exist.
+
+**Everything fails closed.** A counter store that cannot answer is not
+permission: registration refuses with `500 Registration failed`, and a consumer
+request refuses through its route's ordinary 500. Internal traffic never
+touches those stores and is unaffected.
+
+**Still unimplemented:** deployment and live smoke (B4); the iOS Keychain and
+bounded 401 recovery (M5E-C).
+
+**Live Redis conformance passes for all three stores** against production-class
+Upstash: idempotency 28, credentials 19, counters 9, plus 24 offline harness
+tests in the same directory — 80 passed, 0 failed, 1 capability-excluded.
+
+**What the first live run exposed, and what it did not.** The idempotency suite
+initially failed 12 of 28. The cause was entirely in the harness: the
+conformance suite reasons in logical keys (`k1`, `k2`, `k3`) and the store uses
+whatever key it is given verbatim, because namespacing is the route's job
+(`storeKey()`). Against the in-process store that is harmless — every
+`createStore()` builds a fresh `Map` — but against Redis every test shared one
+physical key, so a case would claim `k1` as `req-original` and read back
+`req-1` left by an earlier one. Live tests now map their keys under
+`idemtest:v1:<uuid>:`, unique per store instance, and delete exactly the keys
+they created. **No production idempotency semantics were changed, and none
+needed to be**: the test keys were never in the `idem:v1:` namespace, so no real
+record was ever read, written, or deleted.
+
+**Retention is verified in two halves, by clock capability.** One case then
+remained: *"lets a completed record expire once its retention window passes"*,
+which fast-forwards an injected `now` by 24 hours. The in-process store models
+retention against that argument and passes; Redis expires on wall-clock TTL,
+which no argument moves, so the record was still there 159ms later. **Production
+Redis was not defective** — it sets exactly the contracted 86400s.
+
+The suite is now explicit about which half a target can prove:
+
+- **Logical clock** (in-process): step past the window, watch the record
+  disappear. This is where the expiration boundary itself is verified.
+- **Wall clock** (Redis): ask what retention was actually applied and require
+  it to be the contracted 86400s, positive, and not "no expiry".
+
+Each run shows the inapplicable case skipped by name beside its replacement, so
+the distinction is visible in the output rather than absorbed by a bare skip.
+**Waiting 24 real hours is deliberately not part of B4.** Every other
+idempotency semantic — replay, conflict, stale-lease conversion, concurrency,
+holder-only completion, and the durability of AMBIGUOUS and abandoned
+IN_PROGRESS records — is exercised directly against real Redis.
+
+Live test state is isolated under `idemtest:v1:<uuid>:` and the exact keys
+created are deleted afterwards. No production idempotency record was read,
+written, or deleted at any point.
+
+**Gates 1–3 are met.**
+
+## M5E-B4 — verified live on Vercel (2026-08-25)
+
+Commit verified: `de71780`. Preview deployment `dpl_3uV5aJjmQRMMrQ3xTmgePkJx5vpC`
+(`social-recipe-anylist-n1pdiz08o…`), target **preview**, never aliased.
+Production deployment `dpl_7dXto9WhmamHTuXQfuEFnbCBWGsG` was untouched
+throughout and answers `/health` 200.
+
+**Runtime.** Both current Production and the verification Preview report
+`nodeVersion 22.x` / `lambda.runtime nodejs22.x` in deployment metadata. The
+`engines` pin wins over the project's Node 24 default, so the runtime matches
+what Milestone 4 was verified on.
+
+**The client-IP gate passed against the real platform.** Six registrations from
+one source, each carrying a *different* forged `X-Vercel-Forwarded-For`: five
+allowed, the sixth `429`. Forged `X-Forwarded-For`, in single and list form,
+and both headers together, likewise could not obtain a fresh bucket. Only six
+requests were made against a 20/minute global ceiling, so the refusal was the
+5/hour per-IP limit and not the circuit breaker. Vercel overwrites or ignores
+caller-supplied forwarding headers, which is what B3's rule assumed and had not
+yet been able to confirm.
+
+**Consumer auth, end to end.** Registration returned a well-formed
+`sr1_<22>_<43>` token whose embedded id matched `client.id`. Before first use
+the record held `createdAt`, `secretHash`, `status` and nothing else — no raw
+secret, no token, no `lastSeenAt` — with a TTL of 7.00 days. One authenticated
+request (deliberately invalid body, so validation rejected it before
+extraction) set `lastSeenAt` and left the key **persistent, TTL -1**: the orphan
+window is removed by first use, exactly as designed.
+
+**Quotas enforce at their boundaries.** Imports: units 1–20 passed to
+validation, unit 21 answered `429 Too many requests` with a request id.
+Exports: units 1–40, then `429` on 41. Internal traffic bypasses both — 25
+consecutive internal-key requests all reached validation and none was metered.
+
+**Revocation is immediate.** The test credential was revoked through the store's
+own operation: `status: revoked`, `revokedAt` set, record retained rather than
+deleted (ADR-026). The same token that had authenticated moments earlier then
+answered 401 — no cache, which is the trade ADR-026 chose over a validation
+cache.
+
+**No secret reached a log.** The exact ephemeral internal key, the consumer
+token, and its secret are all absent from the deployment's runtime logs, as are
+`sr1_`, any `Bearer` value, and `secretHash`. A generic sweep found **zero**
+64-hex strings of any kind. The public `clientId` and request ids appear, as
+designed.
+
+**Nothing external was invoked.** Every quota request failed contract validation
+before extraction, so no Anthropic or Apify call was made, and no AnyList call
+of any kind occurred. Preview carries no AnyList credentials at all — and
+`/health` returning 200 there proves the application boots without them.
+
+Intentionally not done: live store-failure injection, because Preview shares the
+production-class Upstash instance and inducing an outage to satisfy a smoke test
+would be the wrong trade. The B2/B3 automated fail-closed tests cover that path.
+
+**What this does not clear.** AnyList credentials in the Production environment
+remain temporary development architecture: they are the operator's own account,
+and an App Store release cannot ship on them. **ADR-023 remains open** — native
+`set-cookie` leakage to stderr on failed AnyList login still blocks broad
+consumer release, and nothing in M5E touches it. The
+in-process suites passing is not evidence about the stores that will be
+deployed — atomicity is structural in memory and bought with Lua in Redis, and
+only one of those runs in production. All three must be run and reported before
+B4:
+
+```
+set -a; source .env; set +a     # or export the Upstash variables another way
+QA_LIVE_EXTERNAL=1 npm test -- tests/live/
+```
+
+**`QA_LIVE_EXTERNAL=1` means run or fail, never run if convenient.** With the
+flag set and Upstash unconfigured, the suites fail and the command exits
+non-zero, naming the missing variables. Without the flag they stay skipped and
+the normal run stays offline.
+
+That distinction is load-bearing: the command previously exited 0 while
+skipping everything, so a B4 gate read from its exit code could report a pass
+for work that never happened. The credentials must reach the **test process** —
+`.env` alone is not enough, because `dotenv` is loaded when a server is built,
+not by the test harness. In practice that means running under the project's
+environment, e.g. `vercel env run -e production -- sh -c '…'`.
+
+**Live mode opens the network to Upstash and to nothing else.** The normal run
+blocks every external call, and that is unchanged. The exception is deliberately
+narrow because the command that runs these suites injects the **production**
+environment: the same process is holding live Anthropic, AnyList, and Apify
+credentials, and opening the network wholesale for a flag would put those one
+accidental `fetch` away from being spent. The guard compares origins — never
+prefixes — so a host that merely starts with the configured one is refused, and
+a permitted request cannot become an escape by being redirected. A missing or
+unparseable Upstash URL blocks everything rather than allowing anything. See
+`tests/support/network-guard.ts`.
+
+The approved contract is unchanged; see `contracts.md` Part 3, ADR-026, and
+ADR-027 for what B2 and B3 must build.
+
+Approved and written up in `contracts.md` Part 3, ADR-026, and ADR-027:
+
+- **Anonymous, installation-scoped, server-minted opaque bearer credentials.**
+  No account, no email, no password, no Apple ID, and no client-supplied
+  installation identifier — the server mints the identity.
+- Token `sr1_<clientId>_<secret>`; the server stores only a SHA-256 digest of
+  the secret and compares in constant time.
+- Long-lived until revoked. A credential that never authenticates is cleaned up
+  after 7 days.
+- `RECIPE_API_KEY` keeps working for CLI, smoke tests, and private tooling, and
+  skips the store lookup entirely.
+- `429 Too many requests` enters the contract, with one fixed error string.
+  Registration is limited per IP and globally; consumer principals are metered
+  per client (20 imports/day, 40 exports/day).
+- App Attest and DeviceCheck are **not** V1 requirements.
+
+Two consequences worth carrying into implementation. Consumer auth makes Redis
+a dependency of **every** consumer request rather than only exports, and it
+fails closed — that was chosen over a validation cache so revocation is
+immediate. And the public registration route **must not be deployed before the
+rate limits and quotas exist** (M5E-B3); the endpoint mints credentials to
+anyone who calls it.
+
+Sequencing: **M5E-B1** token primitives and store, **B2** principal
+authentication and legacy-key coexistence, **B3** public registration with
+proxy trust and limits, **B4** deploy and private smoke, **M5E-C** the iOS
+Keychain and bounded 401 recovery. The public route is built last, on purpose.
+
+**This does not unblock broad consumer release.** ADR-023 is a separate gate.
 
 ## Rules for all parallel agents
 
@@ -329,8 +601,9 @@ is **Production or manual** only.
 
 - **The YouTube enum source change awaits approval.** Written out exactly in
   `contracts.md`. Three touch points, one of which is a test that inverts.
-- **Consumer/user authentication** must be decided before broad distribution.
-  Not a Wave 1 blocker; Wave 1B must not harden around the static token.
+- **Consumer authentication is decided (ADR-026, ADR-027) and unimplemented.**
+  Building it is M5E-B. Until then the static token is the only credential, and
+  the iOS client must not harden around it.
 - **Whether an unimplemented-but-canonical platform deserves a distinct status
   code** (`501` rather than `400 Unsupported platform`). Separate contract
   change, not proposed.

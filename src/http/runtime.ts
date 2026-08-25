@@ -1,10 +1,18 @@
 import { config as loadEnvFile } from "dotenv";
 import type { FastifyInstance } from "fastify";
 
+import { LazyClientCredentialStore } from "../client/lazy-store.js";
+import { RedisClientCredentialStore } from "../client/redis-store.js";
+import type { ClientCredentialStore } from "../client/store.js";
 import { LazyIdempotencyStore } from "../idempotency/lazy-store.js";
+import { LazyRateLimitStore } from "../ratelimit/lazy-store.js";
+import { RedisRateLimitStore } from "../ratelimit/redis-store.js";
+import type { RateLimitStore } from "../ratelimit/store.js";
 import { MemoryIdempotencyStore } from "../idempotency/memory-store.js";
 import { RedisIdempotencyStore } from "../idempotency/redis-store.js";
 import type { IdempotencyStore } from "../idempotency/store.js";
+import { resolveIpStrategy } from "./client-ip.js";
+import { resolveLimits } from "./limits.js";
 import { buildServer } from "./server.js";
 
 const DEFAULT_PORT = 3000;
@@ -102,6 +110,43 @@ export function resolveIdempotencyStore(
 }
 
 /**
+ * Consumer credentials, where this deployment offers consumer authentication.
+ *
+ * Returning `undefined` is not a degraded mode: an installation token is
+ * *refused* without a store, never accepted. It simply means nothing here can
+ * verify one, which is the correct state for a local run that has no Redis and
+ * no consumer clients.
+ *
+ * There is deliberately no in-memory fallback. The idempotency store has one
+ * because local development genuinely needs export idempotency to function;
+ * an in-memory credential store would mint nothing, verify nothing, and lose
+ * everything on restart, so it would only ever create the illusion of consumer
+ * auth being wired up.
+ */
+export function resolveClientCredentialStore(
+  env: NodeJS.ProcessEnv,
+): ClientCredentialStore | undefined {
+  if (!hasRedisConfiguration(env)) return undefined;
+
+  return new LazyClientCredentialStore(() => RedisClientCredentialStore.fromEnvironment(env));
+}
+
+/**
+ * Counters for registration limits and consumer quotas.
+ *
+ * As with credentials, there is no in-memory fallback for a deployment. An
+ * in-process counter would be per-instance and lost on restart, so a limit
+ * built on it would be a limit in name only — and the endpoint it guards mints
+ * credentials to anyone who asks. Absent a store, registration refuses and
+ * consumer quotas fail closed.
+ */
+export function resolveRateLimitStore(env: NodeJS.ProcessEnv): RateLimitStore | undefined {
+  if (!hasRedisConfiguration(env)) return undefined;
+
+  return new LazyRateLimitStore(() => RedisRateLimitStore.fromEnvironment(env));
+}
+
+/**
  * Builds the configured Fastify instance, without listening.
  *
  * Both entrypoints go through here so neither restates the wiring:
@@ -115,6 +160,10 @@ export function createServer(env: NodeJS.ProcessEnv = process.env): FastifyInsta
   const instance = buildServer({
     apiKey: env["RECIPE_API_KEY"],
     idempotencyStore: resolveIdempotencyStore(env),
+    clientStore: resolveClientCredentialStore(env),
+    rateLimitStore: resolveRateLimitStore(env),
+    limits: resolveLimits(env),
+    ipStrategy: resolveIpStrategy(env),
     logger: true,
   });
 
