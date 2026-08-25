@@ -259,9 +259,9 @@ touches those stores and is unaffected.
 **Still unimplemented:** deployment and live smoke (B4); the iOS Keychain and
 bounded 401 recovery (M5E-C).
 
-**Live Redis conformance is partly run.** Counters passed 9/9 and credentials
-19/19 against production-class Upstash. Idempotency passes 27/28, and the
-remaining case is a harness limitation rather than a store defect — see below.
+**Live Redis conformance passes for all three stores** against production-class
+Upstash: idempotency 28, credentials 19, counters 9, plus 24 offline harness
+tests in the same directory — 80 passed, 0 failed, 1 capability-excluded.
 
 **What the first live run exposed, and what it did not.** The idempotency suite
 initially failed 12 of 28. The cause was entirely in the harness: the
@@ -276,17 +276,33 @@ they created. **No production idempotency semantics were changed, and none
 needed to be**: the test keys were never in the `idem:v1:` namespace, so no real
 record was ever read, written, or deleted.
 
-The one remaining failure is *"lets a completed record expire once its retention
-window passes"*. It fast-forwards an injected `now` by 24 hours and expects the
-record to be gone. The in-process store models retention against that argument;
-Redis expires on wall-clock TTL and cannot be fast-forwarded, so the record is
-still there 159ms later. The store sets exactly the contracted 86400s (asserted
-in `src/idempotency/redis-store.test.ts`), and the three retention cases that
-assert a record is *still present* all pass live. Only the "has expired"
-direction is untestable against a real store, and it needs a harness decision
-rather than a code change.
+**Retention is verified in two halves, by clock capability.** One case then
+remained: *"lets a completed record expire once its retention window passes"*,
+which fast-forwards an injected `now` by 24 hours. The in-process store models
+retention against that argument and passes; Redis expires on wall-clock TTL,
+which no argument moves, so the record was still there 159ms later. **Production
+Redis was not defective** — it sets exactly the contracted 86400s.
 
-**Live Redis conformance is not yet fully green**, so the B4 gates are not met. The
+The suite is now explicit about which half a target can prove:
+
+- **Logical clock** (in-process): step past the window, watch the record
+  disappear. This is where the expiration boundary itself is verified.
+- **Wall clock** (Redis): ask what retention was actually applied and require
+  it to be the contracted 86400s, positive, and not "no expiry".
+
+Each run shows the inapplicable case skipped by name beside its replacement, so
+the distinction is visible in the output rather than absorbed by a bare skip.
+**Waiting 24 real hours is deliberately not part of B4.** Every other
+idempotency semantic — replay, conflict, stale-lease conversion, concurrency,
+holder-only completion, and the durability of AMBIGUOUS and abandoned
+IN_PROGRESS records — is exercised directly against real Redis.
+
+Live test state is isolated under `idemtest:v1:<uuid>:` and the exact keys
+created are deleted afterwards. No production idempotency record was read,
+written, or deleted at any point.
+
+**Gates 1–3 are met. B4 is not complete**: the preview deployment, the client-IP
+spoof gate, and the registration and quota smokes have not been run. The
 in-process suites passing is not evidence about the stores that will be
 deployed — atomicity is structural in memory and bought with Lua in Redis, and
 only one of those runs in production. All three must be run and reported before

@@ -5,7 +5,11 @@ import { requireLiveUpstash } from "./prerequisites.js";
 import { RedisIdempotencyStore } from "../../src/idempotency/redis-store.js";
 import { RETENTION_SECONDS } from "../../src/idempotency/store.js";
 import { runIdempotencyStoreConformance } from "../production/idempotency-contract.js";
-import { deleteRecordedTestKeys, IsolatedIdempotencyStore } from "./isolated-store.js";
+import {
+  deleteRecordedTestKeys,
+  IsolatedIdempotencyStore,
+  readTestKeyTtlSeconds,
+} from "./isolated-store.js";
 
 /**
  * LIVE EXTERNAL. Runs the idempotency conformance suite against real Upstash
@@ -50,6 +54,12 @@ describe.skipIf(!ENABLED)("upstash redis — idempotency conformance (LIVE)", ()
     // A fresh namespace per store, and the suite builds one per test.
     createStore: async () =>
       new IsolatedIdempotencyStore(await RedisIdempotencyStore.fromEnvironment()),
+    // Redis expires on wall-clock TTL, and no `now` argument moves that. The
+    // suite therefore asks what retention was actually applied instead of
+    // asking the store to pretend a day went by.
+    supportsLogicalTimeTravel: false,
+    readTtlSeconds: (store, logicalKey) =>
+      readTestKeyTtlSeconds((store as IsolatedIdempotencyStore).physicalKey(logicalKey)),
     completedRetentionMs: RETENTION_SECONDS.COMPLETED * 1000,
     ambiguousRetentionMs: RETENTION_SECONDS.AMBIGUOUS * 1000,
   });

@@ -79,7 +79,64 @@ export interface ConformanceOptions {
   completedRetentionMs?: number;
   /** Record TTL for AMBIGUOUS, in ms. Supply it to run the retention tests. */
   ambiguousRetentionMs?: number;
+  /**
+   * Whether advancing the `now` argument advances the target's sense of
+   * retention. Defaults to `true`.
+   *
+   * The in-process store models expiry against the clock it is handed, so a
+   * test can step past a retention window and watch a record disappear. Redis
+   * expires on wall-clock TTL, and no argument moves that — asking it to would
+   * be asking the real store to behave in a way it should not.
+   */
+  supportsLogicalTimeTravel?: boolean | undefined;
+  /**
+   * The physical TTL a target actually applied, in seconds.
+   *
+   * Required when the target cannot time-travel: it is what replaces the
+   * expiry assertion, one for one, so the retention boundary is still verified
+   * rather than quietly dropped.
+   */
+  readTtlSeconds?: ((store: IdempotencyStore, logicalKey: string) => Promise<number>) | undefined;
 }
+
+/**
+ * Which half of the retention boundary this target can prove.
+ *
+ * `logical` watches a record vanish once its window passes. `ttl` cannot —
+ * that would take twenty-four real hours — so it verifies instead that the
+ * record carries the retention the contract requires, and leaves the passage
+ * of time to the implementation that can simulate it.
+ *
+ * Throwing when neither is available is the point: a target that can do
+ * neither would silently verify no retention at all, which is precisely the
+ * kind of gap a conformance suite exists to prevent.
+ */
+export type RetentionMode = "logical" | "ttl";
+
+export function retentionModeFor({
+  supportsLogicalTimeTravel = true,
+  readTtlSeconds,
+}: Pick<ConformanceOptions, "supportsLogicalTimeTravel" | "readTtlSeconds">): RetentionMode {
+  if (supportsLogicalTimeTravel) return "logical";
+
+  if (readTtlSeconds === undefined) {
+    throw new Error(
+      "A conformance target that cannot advance its own clock must supply readTtlSeconds, " +
+        "or the retention boundary would go unverified in both directions.",
+    );
+  }
+
+  return "ttl";
+}
+
+/**
+ * How far below the contracted retention an observed TTL may sit.
+ *
+ * A live round trip costs a second or two, and the counter starts when Redis
+ * applies the EXPIRE. Sixty seconds is loose enough never to flake and far too
+ * tight to hide a materially different value.
+ */
+export const TTL_TOLERANCE_SECONDS = 60;
 
 /**
  * Anchored to the real clock rather than a fixed past instant.
@@ -97,7 +154,12 @@ export function runIdempotencyStoreConformance({
   createStore,
   completedRetentionMs,
   ambiguousRetentionMs,
+  supportsLogicalTimeTravel = true,
+  readTtlSeconds,
 }: ConformanceOptions): void {
+  // Resolved before any test is declared, so a target that verifies retention
+  // in neither direction fails collection rather than reporting a clean run.
+  const retentionMode = retentionModeFor({ supportsLogicalTimeTravel, readTtlSeconds });
   const claim = (
     store: IdempotencyStore,
     over: Partial<{ key: string; fingerprint: string; requestId: string; now: number }> = {},
@@ -314,8 +376,8 @@ export function runIdempotencyStoreConformance({
       },
     );
 
-    it.runIf(completedRetentionMs !== undefined)(
-      "lets a completed record expire once its retention window passes",
+    it.runIf(completedRetentionMs !== undefined && retentionMode === "logical")(
+      "lets a completed record expire once its retention window passes (logical clock)",
       async () => {
         // Safe: the write is done and verified, so a later retry creating a
         // second recipe is the client's own doing, not something time did.
@@ -327,6 +389,29 @@ export function runIdempotencyStoreConformance({
         expect(await claim(store, { requestId: "req-2", now: after })).toEqual({
           status: "claimed",
         });
+      },
+    );
+
+    it.runIf(completedRetentionMs !== undefined && retentionMode === "ttl")(
+      "gives a completed record the contracted retention as a real TTL (wall clock)",
+      async () => {
+        // The one-for-one replacement for the assertion above. A store whose
+        // clock cannot be advanced can still be asked what retention it
+        // applied, and that is the half of the boundary it can prove: waiting
+        // out the window itself is left to the target that can simulate it.
+        const store = await createStore();
+        await claim(store);
+        await store.complete("k1", "req-1", RESULT, T0);
+
+        const expected = (completedRetentionMs ?? 0) / 1000;
+        const observed = await (readTtlSeconds as NonNullable<typeof readTtlSeconds>)(store, "k1");
+
+        // Positive rules out both "no expiry" and "no such key", which Redis
+        // reports as negative values — a record that never expires would be a
+        // far worse failure than a slightly short one.
+        expect(observed).toBeGreaterThan(0);
+        expect(observed).toBeLessThanOrEqual(expected);
+        expect(observed).toBeGreaterThan(expected - TTL_TOLERANCE_SECONDS);
       },
     );
 

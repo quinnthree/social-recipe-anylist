@@ -94,6 +94,31 @@ export class IsolatedIdempotencyStore implements IdempotencyStore {
 }
 
 /**
+ * The real TTL Redis is holding for a test-owned key, in seconds.
+ *
+ * Redis answers -1 for a key with no expiry and -2 for one that does not
+ * exist, and both are returned as-is: a record that never expires is a worse
+ * failure than a short one, and flattening either to 0 would hide it.
+ *
+ * Test-owned keys only. Reading a production record's TTL would be harmless,
+ * but the prefix check is what makes "this code never touches application
+ * data" a property rather than an intention.
+ */
+export async function readTestKeyTtlSeconds(
+  physicalKey: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
+  if (!physicalKey.startsWith(TEST_KEY_PREFIX)) {
+    throw new Error(`Refusing to inspect ${physicalKey}: live tests read only their own keys.`);
+  }
+
+  const client = await upstashClient(env);
+  if (client === null) throw new Error("Upstash is not configured.");
+
+  return client.ttl(physicalKey);
+}
+
+/**
  * Removes exactly the keys this process created, and refuses anything else.
  *
  * Cleanup is a courtesy, not the isolation mechanism: the suite exercises
@@ -120,15 +145,23 @@ export async function deleteRecordedTestKeys(
     );
   }
 
-  const url = env["KV_REST_API_URL"] ?? env["UPSTASH_REDIS_REST_URL"];
-  const token = env["KV_REST_API_TOKEN"] ?? env["UPSTASH_REDIS_REST_TOKEN"];
-  if (!url || !token) return 0;
-
-  const { Redis } = await import("@upstash/redis");
-  const client = new Redis({ url, token });
+  const client = await upstashClient(env);
+  if (client === null) return 0;
 
   await client.del(...keys);
   forgetTestKeys();
 
   return keys.length;
+}
+
+async function upstashClient(
+  env: NodeJS.ProcessEnv,
+): Promise<{ del(...keys: string[]): Promise<number>; ttl(key: string): Promise<number> } | null> {
+  const url = env["KV_REST_API_URL"] ?? env["UPSTASH_REDIS_REST_URL"];
+  const token = env["KV_REST_API_TOKEN"] ?? env["UPSTASH_REDIS_REST_TOKEN"];
+  if (!url || !token) return null;
+
+  const { Redis } = await import("@upstash/redis");
+
+  return new Redis({ url, token });
 }

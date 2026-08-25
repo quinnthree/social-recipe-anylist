@@ -4,6 +4,7 @@ import { MemoryIdempotencyStore } from "../../src/idempotency/memory-store.js";
 import { storeKey } from "../../src/idempotency/store.js";
 import {
   forgetTestKeys,
+  readTestKeyTtlSeconds,
   IsolatedIdempotencyStore,
   recordedTestKeys,
   TEST_KEY_PREFIX,
@@ -133,5 +134,30 @@ describe("test keys are recognisably test-owned", () => {
 
     forgetTestKeys();
     expect(recordedTestKeys()).toHaveLength(0);
+  });
+});
+
+
+describe("live TTL inspection stays inside the test namespace", () => {
+  it("refuses to read a production idempotency key", async () => {
+    // Reading a real record's TTL would be harmless; refusing is what makes
+    // "this never touches application data" a property rather than a promise.
+    await expect(readTestKeyTtlSeconds("idem:v1:/api/exports/anylist:abc")).rejects.toThrow(
+      /read only their own keys/,
+    );
+  });
+
+  it("refuses an arbitrary key", async () => {
+    await expect(readTestKeyTtlSeconds("k1")).rejects.toThrow(/read only their own keys/);
+  });
+
+  it("accepts a key the isolation wrapper produced", async () => {
+    const store = new IsolatedIdempotencyStore(new MemoryIdempotencyStore());
+
+    // Rejects for want of configuration, not for want of permission — the
+    // prefix check passed, and no network call is attempted offline.
+    await expect(readTestKeyTtlSeconds(store.physicalKey("k1"), {})).rejects.toThrow(
+      /not configured/,
+    );
   });
 });
