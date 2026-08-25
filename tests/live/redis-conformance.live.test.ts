@@ -1,10 +1,11 @@
-import { describe } from "vitest";
+import { afterAll, describe } from "vitest";
 
 import { requireLiveUpstash } from "./prerequisites.js";
 
 import { RedisIdempotencyStore } from "../../src/idempotency/redis-store.js";
 import { RETENTION_SECONDS } from "../../src/idempotency/store.js";
 import { runIdempotencyStoreConformance } from "../production/idempotency-contract.js";
+import { deleteRecordedTestKeys, IsolatedIdempotencyStore } from "./isolated-store.js";
 
 /**
  * LIVE EXTERNAL. Runs the idempotency conformance suite against real Upstash
@@ -25,8 +26,12 @@ import { runIdempotencyStoreConformance } from "../production/idempotency-contra
  * while Redis has to buy it with a Lua script, and only one of those is what
  * runs in production.
  *
- * It writes real keys. They are namespaced (`idem:v1:…`) and carry the
- * contract's own TTLs, so they age out on their own.
+ * It writes real keys, and they are **not** in the application's namespace.
+ * The suite reasons in logical keys (`k1`, `k2`, `k3`) and the store uses what
+ * it is given verbatim, so without a wrapper those would be top-level keys
+ * shared by every test and every run — which is exactly what M5E-B4 hit. Each
+ * store instance therefore maps its keys under `idemtest:v1:<uuid>:`, unique
+ * per test, and the exact keys created are deleted afterwards.
  */
 
 // Throws rather than skips when the flag is set and Upstash is not
@@ -35,8 +40,16 @@ import { runIdempotencyStoreConformance } from "../production/idempotency-contra
 const ENABLED = requireLiveUpstash();
 
 describe.skipIf(!ENABLED)("upstash redis — idempotency conformance (LIVE)", () => {
+  // Cleanup runs after the assertions, so it cannot affect what was measured,
+  // and it removes only keys this process created.
+  afterAll(async () => {
+    await deleteRecordedTestKeys();
+  });
+
   runIdempotencyStoreConformance({
-    createStore: () => RedisIdempotencyStore.fromEnvironment(),
+    // A fresh namespace per store, and the suite builds one per test.
+    createStore: async () =>
+      new IsolatedIdempotencyStore(await RedisIdempotencyStore.fromEnvironment()),
     completedRetentionMs: RETENTION_SECONDS.COMPLETED * 1000,
     ambiguousRetentionMs: RETENTION_SECONDS.AMBIGUOUS * 1000,
   });

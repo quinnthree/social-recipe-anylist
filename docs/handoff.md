@@ -259,7 +259,34 @@ touches those stores and is unaffected.
 **Still unimplemented:** deployment and live smoke (B4); the iOS Keychain and
 bounded 401 recovery (M5E-C).
 
-**Live Redis conformance has not been run**, for any of the three stores. The
+**Live Redis conformance is partly run.** Counters passed 9/9 and credentials
+19/19 against production-class Upstash. Idempotency passes 27/28, and the
+remaining case is a harness limitation rather than a store defect — see below.
+
+**What the first live run exposed, and what it did not.** The idempotency suite
+initially failed 12 of 28. The cause was entirely in the harness: the
+conformance suite reasons in logical keys (`k1`, `k2`, `k3`) and the store uses
+whatever key it is given verbatim, because namespacing is the route's job
+(`storeKey()`). Against the in-process store that is harmless — every
+`createStore()` builds a fresh `Map` — but against Redis every test shared one
+physical key, so a case would claim `k1` as `req-original` and read back
+`req-1` left by an earlier one. Live tests now map their keys under
+`idemtest:v1:<uuid>:`, unique per store instance, and delete exactly the keys
+they created. **No production idempotency semantics were changed, and none
+needed to be**: the test keys were never in the `idem:v1:` namespace, so no real
+record was ever read, written, or deleted.
+
+The one remaining failure is *"lets a completed record expire once its retention
+window passes"*. It fast-forwards an injected `now` by 24 hours and expects the
+record to be gone. The in-process store models retention against that argument;
+Redis expires on wall-clock TTL and cannot be fast-forwarded, so the record is
+still there 159ms later. The store sets exactly the contracted 86400s (asserted
+in `src/idempotency/redis-store.test.ts`), and the three retention cases that
+assert a record is *still present* all pass live. Only the "has expired"
+direction is untestable against a real store, and it needs a harness decision
+rather than a code change.
+
+**Live Redis conformance is not yet fully green**, so the B4 gates are not met. The
 in-process suites passing is not evidence about the stores that will be
 deployed — atomicity is structural in memory and bought with Lua in Redis, and
 only one of those runs in production. All three must be run and reported before
