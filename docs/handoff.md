@@ -301,8 +301,68 @@ Live test state is isolated under `idemtest:v1:<uuid>:` and the exact keys
 created are deleted afterwards. No production idempotency record was read,
 written, or deleted at any point.
 
-**Gates 1–3 are met. B4 is not complete**: the preview deployment, the client-IP
-spoof gate, and the registration and quota smokes have not been run. The
+**Gates 1–3 are met.**
+
+## M5E-B4 — verified live on Vercel (2026-08-25)
+
+Commit verified: `de71780`. Preview deployment `dpl_3uV5aJjmQRMMrQ3xTmgePkJx5vpC`
+(`social-recipe-anylist-n1pdiz08o…`), target **preview**, never aliased.
+Production deployment `dpl_7dXto9WhmamHTuXQfuEFnbCBWGsG` was untouched
+throughout and answers `/health` 200.
+
+**Runtime.** Both current Production and the verification Preview report
+`nodeVersion 22.x` / `lambda.runtime nodejs22.x` in deployment metadata. The
+`engines` pin wins over the project's Node 24 default, so the runtime matches
+what Milestone 4 was verified on.
+
+**The client-IP gate passed against the real platform.** Six registrations from
+one source, each carrying a *different* forged `X-Vercel-Forwarded-For`: five
+allowed, the sixth `429`. Forged `X-Forwarded-For`, in single and list form,
+and both headers together, likewise could not obtain a fresh bucket. Only six
+requests were made against a 20/minute global ceiling, so the refusal was the
+5/hour per-IP limit and not the circuit breaker. Vercel overwrites or ignores
+caller-supplied forwarding headers, which is what B3's rule assumed and had not
+yet been able to confirm.
+
+**Consumer auth, end to end.** Registration returned a well-formed
+`sr1_<22>_<43>` token whose embedded id matched `client.id`. Before first use
+the record held `createdAt`, `secretHash`, `status` and nothing else — no raw
+secret, no token, no `lastSeenAt` — with a TTL of 7.00 days. One authenticated
+request (deliberately invalid body, so validation rejected it before
+extraction) set `lastSeenAt` and left the key **persistent, TTL -1**: the orphan
+window is removed by first use, exactly as designed.
+
+**Quotas enforce at their boundaries.** Imports: units 1–20 passed to
+validation, unit 21 answered `429 Too many requests` with a request id.
+Exports: units 1–40, then `429` on 41. Internal traffic bypasses both — 25
+consecutive internal-key requests all reached validation and none was metered.
+
+**Revocation is immediate.** The test credential was revoked through the store's
+own operation: `status: revoked`, `revokedAt` set, record retained rather than
+deleted (ADR-026). The same token that had authenticated moments earlier then
+answered 401 — no cache, which is the trade ADR-026 chose over a validation
+cache.
+
+**No secret reached a log.** The exact ephemeral internal key, the consumer
+token, and its secret are all absent from the deployment's runtime logs, as are
+`sr1_`, any `Bearer` value, and `secretHash`. A generic sweep found **zero**
+64-hex strings of any kind. The public `clientId` and request ids appear, as
+designed.
+
+**Nothing external was invoked.** Every quota request failed contract validation
+before extraction, so no Anthropic or Apify call was made, and no AnyList call
+of any kind occurred. Preview carries no AnyList credentials at all — and
+`/health` returning 200 there proves the application boots without them.
+
+Intentionally not done: live store-failure injection, because Preview shares the
+production-class Upstash instance and inducing an outage to satisfy a smoke test
+would be the wrong trade. The B2/B3 automated fail-closed tests cover that path.
+
+**What this does not clear.** AnyList credentials in the Production environment
+remain temporary development architecture: they are the operator's own account,
+and an App Store release cannot ship on them. **ADR-023 remains open** — native
+`set-cookie` leakage to stderr on failed AnyList login still blocks broad
+consumer release, and nothing in M5E touches it. The
 in-process suites passing is not evidence about the stores that will be
 deployed — atomicity is structural in memory and bought with Lua in Redis, and
 only one of those runs in production. All three must be run and reported before
