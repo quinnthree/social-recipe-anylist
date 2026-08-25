@@ -1,6 +1,9 @@
 import { config as loadEnvFile } from "dotenv";
 import type { FastifyInstance } from "fastify";
 
+import { LazyClientCredentialStore } from "../client/lazy-store.js";
+import { RedisClientCredentialStore } from "../client/redis-store.js";
+import type { ClientCredentialStore } from "../client/store.js";
 import { LazyIdempotencyStore } from "../idempotency/lazy-store.js";
 import { MemoryIdempotencyStore } from "../idempotency/memory-store.js";
 import { RedisIdempotencyStore } from "../idempotency/redis-store.js";
@@ -102,6 +105,28 @@ export function resolveIdempotencyStore(
 }
 
 /**
+ * Consumer credentials, where this deployment offers consumer authentication.
+ *
+ * Returning `undefined` is not a degraded mode: an installation token is
+ * *refused* without a store, never accepted. It simply means nothing here can
+ * verify one, which is the correct state for a local run that has no Redis and
+ * no consumer clients.
+ *
+ * There is deliberately no in-memory fallback. The idempotency store has one
+ * because local development genuinely needs export idempotency to function;
+ * an in-memory credential store would mint nothing, verify nothing, and lose
+ * everything on restart, so it would only ever create the illusion of consumer
+ * auth being wired up.
+ */
+export function resolveClientCredentialStore(
+  env: NodeJS.ProcessEnv,
+): ClientCredentialStore | undefined {
+  if (!hasRedisConfiguration(env)) return undefined;
+
+  return new LazyClientCredentialStore(() => RedisClientCredentialStore.fromEnvironment(env));
+}
+
+/**
  * Builds the configured Fastify instance, without listening.
  *
  * Both entrypoints go through here so neither restates the wiring:
@@ -115,6 +140,7 @@ export function createServer(env: NodeJS.ProcessEnv = process.env): FastifyInsta
   const instance = buildServer({
     apiKey: env["RECIPE_API_KEY"],
     idempotencyStore: resolveIdempotencyStore(env),
+    clientStore: resolveClientCredentialStore(env),
     logger: true,
   });
 

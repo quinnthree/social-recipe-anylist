@@ -159,15 +159,15 @@ implementation. The Upstash implementation is covered only by the 28 skipped
 live-external tests. **Conformance is not proven for the store we will actually
 deploy** until those run against a live instance during the smoke test.
 
-## Phase 5E — consumer authentication (B1 built, nothing reachable)
+## Phase 5E — consumer authentication (B1–B2 built, no way to get a token)
 
-**Status as of 2026-08-25: the primitives exist and nothing uses them.**
+**Status as of 2026-08-25: installation tokens authenticate, and nobody can
+obtain one.**
 
-`RECIPE_API_KEY` remains the only credential the server accepts. There is no
-registration route, no public path beyond `/health`, no installation token can
-authenticate any request, and no route, hook, or request context references the
-new code. Nothing in `src/http/` or `src/app/` imports `src/client/` — that is
-the check worth repeating before believing any of this is live.
+There is no registration route and no public path beyond `/health`, so the only
+credential any real caller can present is still `RECIPE_API_KEY`. Consumer
+authentication is fully wired and entirely unreachable — which is the intended
+state until B3 adds the limits that make a public mint safe.
 
 **M5E-B1 — implemented (branch `feature/m5e-auth-store`).**
 
@@ -189,10 +189,39 @@ the base64url alphabet, so roughly a third of minted tokens contain the
 separator inside a component. Both components are fixed length, so position
 resolves what splitting cannot. The approved format is unchanged.
 
-**Still unimplemented, in order:** principal authentication and
-`RECIPE_API_KEY` coexistence (B2); public registration, proxy trust, rate
+**M5E-B2 — implemented (branch `feature/m5e-auth-principal`).**
+
+- `src/http/principal.ts` — resolves an `Authorization` header to
+  `{ kind: "internal" }` or `{ kind: "installation", clientId }`. The internal
+  key is checked first and never reaches the store; a malformed installation
+  token is rejected before a lookup rather than after one.
+- The existing `onRequest` hook attaches the principal. **No handler was
+  changed**, and none parses a credential.
+- `src/client/lazy-store.ts` and `resolveClientCredentialStore()` wire Redis in
+  through the same pattern the idempotency store uses. There is deliberately no
+  in-memory fallback for production: absent a store, a well-formed installation
+  token is *refused*, never accepted.
+- Telemetry carries `principalKind` and, for a consumer, the public `clientId`
+  — both `null` until authentication has actually succeeded, so a rejected
+  caller cannot plant an identity in our telemetry.
+
+Two behaviours worth knowing before reading the code:
+
+**A store that cannot answer returns 500, not 401.** Unknown, wrong, and
+revoked credentials are externally indistinguishable 401s, as the contract
+requires. An outage is a different statement — and answering it with 401 would
+tell every consumer client to discard a working credential and register again,
+destroying credentials and stampeding registration at the same moment.
+
+**The atomic `touch` is the final authority on revocation.** A credential
+revoked between the read and the touch fails, even though the read saw it
+active and the secret verified. That race is precisely what the store's
+atomicity exists to close, and the resolver defers to it.
+
+**Still unimplemented, in order:** public registration, proxy trust, rate
 limits, and quotas (B3); deployment and live smoke (B4); the iOS Keychain and
-bounded 401 recovery (M5E-C).
+bounded 401 recovery (M5E-C). No consumer iOS build can obtain a token until
+B3 ships.
 
 **Live Redis conformance has not been run.** The in-process suite passing is
 not evidence about the store that will be deployed — atomicity is structural in

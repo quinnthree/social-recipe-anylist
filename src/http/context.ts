@@ -1,6 +1,7 @@
 import type { exportRecipe } from "../app/export-service.js";
 import type { extractRecipe, importRecipe } from "../app/import-service.js";
 import type { IdempotencyStore } from "../idempotency/store.js";
+import type { AuthenticatedPrincipal } from "./principal.js";
 import type { TelemetryDraft } from "./telemetry.js";
 
 /**
@@ -24,5 +25,12 @@ declare module "fastify" {
     telemetry?: TelemetryDraft;
     /** Whether the request id was adopted from the client or issued by us. */
     requestIdSource?: "client" | "generated";
+    /**
+     * Who authenticated. Present only on requests that passed the auth hook,
+     * so its absence on a protected route means the request never got in.
+     *
+     * Handlers do not read this today; it is the seam B3's quotas key on.
+     */
+    principal?: AuthenticatedPrincipal;
   }
 }

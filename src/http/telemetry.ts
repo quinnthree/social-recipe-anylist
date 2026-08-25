@@ -24,6 +24,8 @@ export type FailureStage =
 
 export type TelemetryRoute = "/api/imports" | "/api/exports/anylist" | "/api/import";
 
+export type PrincipalKind = "internal" | "installation";
+
 /**
  * One event per request. Counts and durations only — never captions, recipe
  * bodies, ingredient text, credentials, or provider errors.
@@ -34,6 +36,18 @@ export interface ImportTelemetry {
   requestId: string;
   route: TelemetryRoute;
   status: number;
+
+  /**
+   * Which credential authenticated, and — for a consumer — which installation.
+   *
+   * Both are `null` until authentication has actually succeeded. An
+   * unauthenticated request must not report a clientId: the value would be
+   * whatever an unverified token claimed, and a rejected caller could plant
+   * anything in it.
+   */
+  principalKind: PrincipalKind | null;
+  /** Public by design (ADR-026). Never the token, the secret, or the digest. */
+  clientId: string | null;
 
   sourcePlatform: string | null;
   sourceType: string | null;
@@ -74,6 +88,8 @@ export interface ImportTelemetry {
 export interface TelemetryDraft {
   route: TelemetryRoute;
   startedAt: bigint;
+  principalKind: PrincipalKind | null;
+  clientId: string | null;
   sourcePlatform: string | null;
   sourceType: string | null;
   captionLength: number | null;
@@ -105,6 +121,8 @@ export function newDraft(route: TelemetryRoute): TelemetryDraft {
   return {
     route,
     startedAt: process.hrtime.bigint(),
+    principalKind: null,
+    clientId: null,
     sourcePlatform: null,
     sourceType: null,
     captionLength: null,
@@ -133,6 +151,8 @@ export function toTelemetry(
     requestId,
     route: draft.route,
     status,
+    principalKind: draft.principalKind,
+    clientId: draft.clientId,
     sourcePlatform: draft.sourcePlatform,
     sourceType: draft.sourceType,
     captionLength: draft.captionLength,

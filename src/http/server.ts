@@ -8,11 +8,12 @@ import {
   importRecipe,
   type ImportFailureKind,
 } from "../app/import-service.js";
+import type { ClientCredentialStore } from "../client/store.js";
 import { MemoryIdempotencyStore } from "../idempotency/memory-store.js";
 import { DEFAULT_LEASE_MS, type IdempotencyStore } from "../idempotency/store.js";
-import { isAuthorized } from "./auth.js";
 import type { RouteContext } from "./context.js";
 import { failLegacy, failWith, FAILURES, kindForFastifyCode, type FailureKind } from "./errors.js";
+import { resolvePrincipal } from "./principal.js";
 import { resolveRequestId } from "./request-id.js";
 import { registerExportRoute } from "./routes/exports-anylist.js";
 import { registerImportsRoute } from "./routes/imports.js";
@@ -64,6 +65,14 @@ export interface ServerDeps {
    * deployment — see `src/server.ts`, which refuses to start without a real one.
    */
   idempotencyStore?: IdempotencyStore;
+  /**
+   * Consumer credentials (ADR-026). Absent means this deployment does not offer
+   * installation authentication, and a well-formed installation token is
+   * refused rather than accepted — never the other way round.
+   *
+   * Requests carrying `RECIPE_API_KEY` never reach it.
+   */
+  clientStore?: ClientCredentialStore | undefined;
   now?: () => number;
   leaseMs?: number;
   logger?: boolean;
@@ -81,6 +90,7 @@ export function buildServer({
   extractRecipe: runExtract = extractRecipe,
   exportRecipe: runExport = exportRecipe,
   idempotencyStore = new MemoryIdempotencyStore(),
+  clientStore,
   now = Date.now,
   leaseMs = DEFAULT_LEASE_MS,
   logger = false,
@@ -152,7 +162,23 @@ export function buildServer({
     // watching — would be the only requests that left no trace.
     const telemetryRoute = telemetryRouteFor(route);
     if (telemetryRoute !== null) request.telemetry = newDraft(telemetryRoute);
-    if (isAuthorized(request.headers.authorization, apiKey)) {
+
+    const resolution = await resolvePrincipal({
+      header: request.headers.authorization,
+      internalSecret: apiKey,
+      clientStore,
+      now: now(),
+    });
+
+    if (resolution.outcome === "authenticated") {
+      const { principal } = resolution;
+      request.principal = principal;
+
+      if (request.telemetry !== undefined) {
+        request.telemetry.principalKind = principal.kind;
+        request.telemetry.clientId = principal.kind === "installation" ? principal.clientId : null;
+      }
+
       request.log.info(
         {
           event: "request.received",
@@ -160,18 +186,28 @@ export function buildServer({
           method: request.method,
           requestIdSource: request.requestIdSource,
           idempotencyKeyPresent: request.headers["idempotency-key"] !== undefined,
+          principalKind: principal.kind,
+          // Public by design. The token, the secret, and the digest are not,
+          // and none of them are in scope here.
+          ...(principal.kind === "installation" ? { clientId: principal.clientId } : {}),
         },
         "request received",
       );
       return;
     }
 
+    // A store that could not answer is our failure, not a bad credential.
+    // Answering 401 would tell every consumer client to discard a working
+    // credential and register again — an outage would then destroy the
+    // credentials and stampede registration at the same time.
+    const kind: FailureKind = resolution.outcome === "unavailable" ? "import_failed" : "unauthorized";
+
     if (request.telemetry !== undefined) {
-      request.telemetry.failureKind = "unauthorized";
-      request.telemetry.failureStage = STAGE_BY_KIND["unauthorized"];
+      request.telemetry.failureKind = kind;
+      request.telemetry.failureStage = STAGE_BY_KIND[kind];
     }
 
-    await respond(route, reply, "unauthorized", request.id);
+    await respond(route, reply, kind, request.id);
   });
 
   // Exactly one telemetry event per request that reached a production or legacy
