@@ -4,7 +4,7 @@ Status: **Milestone 4 complete and verified live.** The private Vercel smoke
 test passed end to end on 2026-08-24. Broad consumer release remains blocked by
 ADR-023.
 
-Last updated: 2026-08-24.
+Last updated: 2026-08-25.
 
 ## Where things stand
 
@@ -159,12 +159,51 @@ implementation. The Upstash implementation is covered only by the 28 skipped
 live-external tests. **Conformance is not proven for the store we will actually
 deploy** until those run against a live instance during the smoke test.
 
-## Phase 5E — consumer authentication (design only, 2026-08-24)
+## Phase 5E — consumer authentication (B1 built, nothing reachable)
 
-**Documentation and contract only. No code exists.** No registration route is
-mounted, no consumer credential can be minted, and `RECIPE_API_KEY` remains the
-only credential the server accepts. Reading this section is not evidence of an
-implementation.
+**Status as of 2026-08-25: the primitives exist and nothing uses them.**
+
+`RECIPE_API_KEY` remains the only credential the server accepts. There is no
+registration route, no public path beyond `/health`, no installation token can
+authenticate any request, and no route, hook, or request context references the
+new code. Nothing in `src/http/` or `src/app/` imports `src/client/` — that is
+the check worth repeating before believing any of this is live.
+
+**M5E-B1 — implemented (branch `feature/m5e-auth-store`).**
+
+- `src/client/token.ts` — minting, strict parsing, SHA-256 hashing, and
+  constant-time verification for `sr1_<clientId>_<secret>`.
+- `src/client/store.ts` — the `ClientCredentialStore` interface and the record
+  model, plus the retention and refresh constants.
+- `src/client/memory-store.ts` — in-process implementation, held to the same
+  semantics as Redis rather than a looser approximation.
+- `src/client/redis-store.ts` — Lua-backed implementation on the approved
+  `client:v1:<clientId>` namespace.
+- `tests/production/client-credential-contract.ts` — one conformance suite,
+  run against the in-process store in normal CI and against real Upstash under
+  the live gate.
+
+One implementation detail is worth carrying forward because it is easy to get
+wrong: **token parsing is positional, not delimiter-split.** `_` is a member of
+the base64url alphabet, so roughly a third of minted tokens contain the
+separator inside a component. Both components are fixed length, so position
+resolves what splitting cannot. The approved format is unchanged.
+
+**Still unimplemented, in order:** principal authentication and
+`RECIPE_API_KEY` coexistence (B2); public registration, proxy trust, rate
+limits, and quotas (B3); deployment and live smoke (B4); the iOS Keychain and
+bounded 401 recovery (M5E-C).
+
+**Live Redis conformance has not been run.** The in-process suite passing is
+not evidence about the store that will be deployed — atomicity is structural in
+memory and bought with Lua in Redis. Run it and report before B4:
+
+```
+QA_LIVE_EXTERNAL=1 npm test -- tests/live/
+```
+
+The approved contract is unchanged; see `contracts.md` Part 3, ADR-026, and
+ADR-027 for what B2 and B3 must build.
 
 Approved and written up in `contracts.md` Part 3, ADR-026, and ADR-027:
 
