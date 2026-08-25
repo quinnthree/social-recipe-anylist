@@ -259,19 +259,27 @@ touches those stores and is unaffected.
 **Still unimplemented:** deployment and live smoke (B4); the iOS Keychain and
 bounded 401 recovery (M5E-C).
 
-Before B4 both live suites must be run and reported:
+**Live Redis conformance has not been run**, for any of the three stores. The
+in-process suites passing is not evidence about the stores that will be
+deployed — atomicity is structural in memory and bought with Lua in Redis, and
+only one of those runs in production. All three must be run and reported before
+B4:
 
 ```
+set -a; source .env; set +a     # or export the Upstash variables another way
 QA_LIVE_EXTERNAL=1 npm test -- tests/live/
 ```
 
-**Live Redis conformance has not been run.** The in-process suite passing is
-not evidence about the store that will be deployed — atomicity is structural in
-memory and bought with Lua in Redis. Run it and report before B4:
+**`QA_LIVE_EXTERNAL=1` means run or fail, never run if convenient.** With the
+flag set and Upstash unconfigured, the suites fail and the command exits
+non-zero, naming the missing variables. Without the flag they stay skipped and
+the normal run stays offline.
 
-```
-QA_LIVE_EXTERNAL=1 npm test -- tests/live/
-```
+That distinction is load-bearing: the command previously exited 0 while
+skipping everything, so a B4 gate read from its exit code could report a pass
+for work that never happened. The credentials must reach the **test process** —
+`.env` alone is not enough, because `dotenv` is loaded when a server is built,
+not by the test harness.
 
 The approved contract is unchanged; see `contracts.md` Part 3, ADR-026, and
 ADR-027 for what B2 and B3 must build.

@@ -1,5 +1,7 @@
 import { describe } from "vitest";
 
+import { requireLiveUpstash } from "./prerequisites.js";
+
 import { RedisIdempotencyStore } from "../../src/idempotency/redis-store.js";
 import { RETENTION_SECONDS } from "../../src/idempotency/store.js";
 import { runIdempotencyStoreConformance } from "../production/idempotency-contract.js";
@@ -8,10 +10,12 @@ import { runIdempotencyStoreConformance } from "../production/idempotency-contra
  * LIVE EXTERNAL. Runs the idempotency conformance suite against real Upstash
  * Redis.
  *
- * Skipped unless `QA_LIVE_EXTERNAL=1` is set *and* credentials are present.
- * Gating on the flag as well as the credentials is deliberate: a developer's
- * `.env` may well carry working Upstash credentials, and the normal suite must
- * stay offline regardless of what happens to be in the environment.
+ * Skipped unless `QA_LIVE_EXTERNAL=1` is set. Gating on the flag is deliberate:
+ * a developer's `.env` may well carry working Upstash credentials, and the
+ * normal suite must stay offline regardless of what is in the environment.
+ *
+ * With the flag set and credentials absent, this **fails** rather than skipping.
+ * `QA_LIVE_EXTERNAL=1` means run or fail, never run if convenient.
  *
  *   QA_LIVE_EXTERNAL=1 npm test -- tests/live/
  *
@@ -25,11 +29,10 @@ import { runIdempotencyStoreConformance } from "../production/idempotency-contra
  * contract's own TTLs, so they age out on their own.
  */
 
-const CREDENTIALS_PRESENT =
-  (process.env["KV_REST_API_URL"] ?? process.env["UPSTASH_REDIS_REST_URL"]) !== undefined &&
-  (process.env["KV_REST_API_TOKEN"] ?? process.env["UPSTASH_REDIS_REST_TOKEN"]) !== undefined;
-
-const ENABLED = process.env["QA_LIVE_EXTERNAL"] === "1" && CREDENTIALS_PRESENT;
+// Throws rather than skips when the flag is set and Upstash is not
+// configured: `QA_LIVE_EXTERNAL=1` is a request to run, and a suite that
+// quietly declines it reports a pass for work that never happened.
+const ENABLED = requireLiveUpstash();
 
 describe.skipIf(!ENABLED)("upstash redis — idempotency conformance (LIVE)", () => {
   runIdempotencyStoreConformance({
