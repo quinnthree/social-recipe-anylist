@@ -279,7 +279,19 @@ That distinction is load-bearing: the command previously exited 0 while
 skipping everything, so a B4 gate read from its exit code could report a pass
 for work that never happened. The credentials must reach the **test process** —
 `.env` alone is not enough, because `dotenv` is loaded when a server is built,
-not by the test harness.
+not by the test harness. In practice that means running under the project's
+environment, e.g. `vercel env run -e production -- sh -c '…'`.
+
+**Live mode opens the network to Upstash and to nothing else.** The normal run
+blocks every external call, and that is unchanged. The exception is deliberately
+narrow because the command that runs these suites injects the **production**
+environment: the same process is holding live Anthropic, AnyList, and Apify
+credentials, and opening the network wholesale for a flag would put those one
+accidental `fetch` away from being spent. The guard compares origins — never
+prefixes — so a host that merely starts with the configured one is refused, and
+a permitted request cannot become an escape by being redirected. A missing or
+unparseable Upstash URL blocks everything rather than allowing anything. See
+`tests/support/network-guard.ts`.
 
 The approved contract is unchanged; see `contracts.md` Part 3, ADR-026, and
 ADR-027 for what B2 and B3 must build.

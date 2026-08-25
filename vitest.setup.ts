@@ -1,3 +1,5 @@
+import { installNetworkGuard } from "./tests/support/network-guard.js";
+
 /**
  * No automated test may make a live third-party call.
  *
@@ -9,11 +11,9 @@
  *
  * A test that genuinely needs to exercise fetch behaviour stubs it locally,
  * which overrides this.
+ *
+ * The single exception is `QA_LIVE_EXTERNAL=1`, which permits the configured
+ * Upstash origin and nothing else — see `tests/support/network-guard.ts` for
+ * why the exception is that narrow.
  */
-const blocked = (): never => {
-  throw new Error(
-    "Live network access is blocked in tests. Inject a fake at the boundary instead.",
-  );
-};
-
-globalThis.fetch = blocked as unknown as typeof fetch;
+installNetworkGuard();
