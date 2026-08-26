@@ -113,7 +113,12 @@ describe("the Vercel default export", () => {
   });
 
   it("exposes maxDuration as a statically parseable literal", () => {
-    expect(entrypoint.config).toEqual({ maxDuration: 120 });
+    expect(entrypoint.config).toEqual({
+      maxDuration: 120,
+      // The isolated AnyList child (ADR-023) is spawned, not imported, so import
+      // tracing cannot see it and it must be packaged explicitly.
+      includeFiles: "src/anylist/child/**",
+    });
   });
 });
 

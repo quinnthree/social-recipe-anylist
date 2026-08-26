@@ -43,8 +43,18 @@ import { createServer } from "./http/runtime.js";
  * This is the only supported place to set the duration for a
  * framework-detected backend: a `functions` entry in `vercel.json` is validated
  * against Serverless Functions in `api/` and fails the build.
+ *
+ * **Keep it a flat, comment-free literal on one line.** The parser is a partial
+ * TypeScript AST walker, not an evaluator: a comment inside the braces fails the
+ * build with `Unhandled type: "ColonToken"`, which names nothing useful.
+ * Measured 2026-08-26.
+ *
+ * `includeFiles` packages the isolated AnyList child (ADR-023). The child is
+ * **spawned, not imported**, so import tracing cannot see it and would ship a
+ * function that builds, starts, and then fails on the first export. The native
+ * binary needs no entry — the child resolves it from node_modules at runtime.
  */
-export const config = { maxDuration: 120 };
+export const config = { maxDuration: 120, includeFiles: "src/anylist/child/**" };
 
 /**
  * Built once per instance, at module load, so route registration and the

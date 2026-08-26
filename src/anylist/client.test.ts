@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { Recipe } from "../recipe/schema.js";
-import { AnyListRecipeSaver, type AnyListClientLike } from "./client.js";
+import {
+  fakeChildRunner,
+  failingChildRunner,
+  respondingChildRunner,
+  type FakeChildOptions,
+} from "../test-support/anylist-child-double.js";
+import type { ChildRunner } from "./child-runner.js";
+import { AnyListRecipeSaver } from "./client.js";
 import { AnyListError } from "./types.js";
 
 const PASSWORD = "sup3r-s3cret-p@ssword";
@@ -27,38 +34,17 @@ const recipe: Recipe = {
   warnings: [],
 };
 
-interface FakeOptions {
-  loginError?: unknown;
-  createError?: unknown;
-  verifyError?: unknown;
-  /** What getRecipeById returns. Defaults to the created recipe. */
-  verifyResult?: { id: string } | null;
-}
+/**
+ * The adapter no longer holds a client — it holds a child runner (ADR-023), so
+ * the seam these tests inject at moved with it. The scenarios are unchanged:
+ * the double reproduces the child's login → create → verify sequence and its
+ * status extraction, so every assertion below still describes the same
+ * situation it always did.
+ */
+function fakeClient(options: FakeChildOptions = {}) {
+  const { run, calls } = fakeChildRunner(options);
 
-function fakeClient(options: FakeOptions = {}) {
-  const calls = { create: 0, verify: 0, verifiedIds: [] as string[], payloads: [] as unknown[] };
-
-  const client: AnyListClientLike = {
-    async createRecipe(payload) {
-      calls.create += 1;
-      calls.payloads.push(payload);
-      if (options.createError !== undefined) throw options.createError;
-      return { id: CREATED_ID, name: payload.name };
-    },
-    async getRecipeById(recipeId) {
-      calls.verify += 1;
-      calls.verifiedIds.push(recipeId);
-      if (options.verifyError !== undefined) throw options.verifyError;
-      return options.verifyResult === undefined ? { id: CREATED_ID } : options.verifyResult;
-    },
-  };
-
-  const connect = async (): Promise<AnyListClientLike> => {
-    if (options.loginError !== undefined) throw options.loginError;
-    return client;
-  };
-
-  return { client, connect, calls };
+  return { connect: run, calls };
 }
 
 /** Shaped like a transport error whose innards reach the submitted credentials. */
@@ -239,7 +225,7 @@ describe("AnyListRecipeSaver.save", () => {
     });
 
     it("never lets credentials reach the thrown error, on any failure path", async () => {
-      const failures: FakeOptions[] = [
+      const failures: FakeChildOptions[] = [
         { loginError: credentialBearingError(401) },
         { createError: credentialBearingError(500) },
         { verifyError: credentialBearingError(503) },
@@ -317,5 +303,82 @@ describe("AnyListRecipeSaver.fromEnvironment", () => {
       ANYLIST_PASSWORD: PASSWORD,
     });
     expect(saver).toBeInstanceOf(AnyListRecipeSaver);
+  });
+});
+
+describe("containment failures are translated, not propagated (ADR-023)", () => {
+  async function thrownBy(runner: ChildRunner): Promise<AnyListError> {
+    const error = await new AnyListRecipeSaver(runner).save(recipe).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(AnyListError);
+    return error as AnyListError;
+  }
+
+  it("treats a worker that never started as safe, because nothing was attempted", async () => {
+    const error = await thrownBy(failingChildRunner("spawn_failed"));
+
+    // `login_failed` is the only code carrying positive evidence that no write
+    // happened, and it is the only one the export path may retry.
+    expect(error.code).toBe("login_failed");
+  });
+
+  it.each(["timeout", "child_crashed", "malformed_stdout", "oversized_stdout"] as const)(
+    "treats %s as ambiguous, because the write may already have landed",
+    async (failure) => {
+      const error = await thrownBy(failingChildRunner(failure));
+
+      expect(error.code).toBe("create_failed");
+    },
+  );
+
+  it("reports missing credentials from the child with the established message", async () => {
+    const error = await thrownBy(
+      respondingChildRunner({ ok: false, code: "missing_credentials", httpStatus: null }),
+    );
+
+    expect(error.code).toBe("login_failed");
+    expect(error.message).toBe(
+      "Missing AnyList credentials. Set ANYLIST_EMAIL and ANYLIST_PASSWORD in .env (see .env.example).",
+    );
+  });
+
+  it("treats a protocol mismatch as safe: the child rejects it before the network", async () => {
+    const error = await thrownBy(
+      respondingChildRunner({ ok: false, code: "bad_request", httpStatus: null }),
+    );
+
+    expect(error.code).toBe("login_failed");
+  });
+
+  it("carries the status code across, and nothing else", async () => {
+    const error = await thrownBy(
+      respondingChildRunner({ ok: false, code: "login_failed", httpStatus: 401 }),
+    );
+
+    expect(error.message).toBe(
+      "AnyList login failed. Check ANYLIST_EMAIL and ANYLIST_PASSWORD in .env. (HTTP 401)",
+    );
+  });
+
+  it("omits the status when the child had none to report", async () => {
+    const error = await thrownBy(
+      respondingChildRunner({ ok: false, code: "verify_missing", httpStatus: null }),
+    );
+
+    expect(error.message).toBe(
+      "AnyList accepted the save request, but the recipe could not be verified in the account.",
+    );
+  });
+
+  it("sends no credentials in the request protocol", async () => {
+    const { run, calls } = fakeChildRunner();
+    await new AnyListRecipeSaver(run).save(recipe);
+
+    // Credentials reach the child through the inherited environment. A request
+    // that carried them would put them one serialisation away from a log line.
+    const serialised = JSON.stringify(calls.requests);
+    expect(serialised).not.toContain(EMAIL);
+    expect(serialised).not.toContain(PASSWORD);
+    expect(Object.keys(calls.requests[0] as object).sort()).toEqual(["operation", "payload"]);
   });
 });
