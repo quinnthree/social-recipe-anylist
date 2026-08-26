@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { fixture } from "../../fixtures/corpus.js";
 import { requireRecipe } from "../../fixtures/types.js";
-import { AnyListRecipeSaver, type AnyListClientLike } from "../../src/anylist/client.js";
-import type { CreateRecipeOptions, RecipeSaver } from "../../src/anylist/types.js";
+import { AnyListRecipeSaver } from "../../src/anylist/client.js";
+import type { RecipeSaver } from "../../src/anylist/types.js";
+import { fakeChildRunner } from "../../src/test-support/anylist-child-double.js";
 import { ImportError, importRecipe, type ImportDeps } from "../../src/app/import-service.js";
 import { parseRecipe } from "../../src/recipe/parser.js";
 import { fetchSourceContent } from "../../src/social/index.js";
@@ -346,28 +347,29 @@ describe("AnyList export failures", () => {
   }
 
   function saverWith(options: FakeOptions): { saver: RecipeSaver; calls: Calls } {
-    const calls: Calls = { login: 0, create: 0, verify: 0 };
+    // The write is performed in an isolated child now (ADR-023), so the seam is
+    // the child runner. The counts below still mean what they meant: how many
+    // times each step of the AnyList sequence was reached.
+    const { run: childRun, calls: recorded } = fakeChildRunner({
+      ...options,
+      createdId: "server-id",
+    });
 
-    const client: AnyListClientLike = {
-      async createRecipe(payload: CreateRecipeOptions) {
-        calls.create += 1;
-        if (options.createError !== undefined) throw options.createError;
-        return { id: "server-id", name: payload.name };
+    // Narrowed to the three counters this suite asserts on, as live getters:
+    // the assertions read them after the run, and compare by deep equality.
+    const calls: Calls = {
+      get login() {
+        return recorded.login;
       },
-      async getRecipeById(id: string) {
-        calls.verify += 1;
-        if (options.verifyError !== undefined) throw options.verifyError;
-        return options.verifyResult === undefined ? { id } : options.verifyResult;
+      get create() {
+        return recorded.create;
+      },
+      get verify() {
+        return recorded.verify;
       },
     };
 
-    const saver = new AnyListRecipeSaver(async () => {
-      calls.login += 1;
-      if (options.loginError !== undefined) throw options.loginError;
-      return client;
-    });
-
-    return { saver, calls };
+    return { saver: new AnyListRecipeSaver(childRun), calls };
   }
 
   async function run(options: FakeOptions) {

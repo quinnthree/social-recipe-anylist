@@ -252,11 +252,18 @@ describe("Vercel function configuration", () => {
   it("sets maxDuration in the entrypoint's static config", () => {
     // `@vercel/node` reads `export const config` from the resolved entrypoint
     // via `@vercel/static-config` and uses `maxDuration` for the function.
-    expect(entrypoint).toMatch(/export const config = \{ maxDuration: 120 \}/);
+    expect(entrypoint).toMatch(/export const config = \{[\s\S]*maxDuration: 120/);
   });
 
   it("keeps that config an object literal, because it is parsed and not evaluated", () => {
     expect(entrypoint).not.toMatch(/export const config = [A-Za-z_]/);
+  });
+
+  it("packages the spawned AnyList child, which import tracing cannot see", () => {
+    // Without this the function builds and starts, then fails on the first
+    // export. `tests/architecture/anylist-packaging.test.ts` checks the glob
+    // still covers the child; this checks the declaration exists at all.
+    expect(entrypoint).toMatch(/includeFiles:\s*"src\/anylist\/child\/\*\*"/);
   });
 
   it("defines no `functions` block", () => {

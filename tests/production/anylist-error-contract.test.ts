@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { fixture } from "../../fixtures/corpus.js";
 import { requireRecipe } from "../../fixtures/types.js";
-import { AnyListRecipeSaver, type AnyListClientLike } from "../../src/anylist/client.js";
-import { AnyListError, type CreateRecipeOptions } from "../../src/anylist/types.js";
+import { AnyListRecipeSaver } from "../../src/anylist/client.js";
+import { AnyListError } from "../../src/anylist/types.js";
+import { fakeChildRunner } from "../../src/test-support/anylist-child-double.js";
 import {
   ANYLIST_ERROR_CODES,
   CODE_TO_STATE,
@@ -31,21 +32,10 @@ interface FakeOptions {
 }
 
 function saverFor(options: FakeOptions): AnyListRecipeSaver {
-  const client: AnyListClientLike = {
-    async createRecipe(payload: CreateRecipeOptions) {
-      if (options.createError !== undefined) throw options.createError;
-      return { id: "recipe-id", name: payload.name };
-    },
-    async getRecipeById(id: string) {
-      if (options.verifyError !== undefined) throw options.verifyError;
-      return options.verifyResult === undefined ? { id } : options.verifyResult;
-    },
-  };
-
-  return new AnyListRecipeSaver(async () => {
-    if (options.loginError !== undefined) throw options.loginError;
-    return client;
-  });
+  // The adapter's seam is the child runner now (ADR-023 containment). The
+  // double reproduces the child's login → create → verify sequence, so each
+  // scenario below still describes the failure it always described.
+  return new AnyListRecipeSaver(fakeChildRunner({ ...options, createdId: "recipe-id" }).run);
 }
 
 const SCENARIOS: Record<keyof typeof SCENARIO_TO_CODE, FakeOptions> = {

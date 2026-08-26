@@ -1,6 +1,8 @@
 import type { Recipe } from "../recipe/schema.js";
+import type { ChildFailureCode } from "./child-protocol.js";
+import { createChildRunner, type ChildRunner, type RunnerFailure } from "./child-runner.js";
 import { toAnyListRecipe } from "./mapping.js";
-import { AnyListError, type CreateRecipeOptions, type RecipeSaver, type SaveResult } from "./types.js";
+import { AnyListError, type RecipeSaver, type SaveResult } from "./types.js";
 
 const LOGIN_FAILED = "AnyList login failed. Check ANYLIST_EMAIL and ANYLIST_PASSWORD in .env.";
 const SAVE_FAILED = "Failed to save the recipe to AnyList.";
@@ -11,21 +13,46 @@ const VERIFY_UNREADABLE =
 const VERIFY_MISSING =
   "AnyList accepted the save request, but the recipe could not be verified in the account.";
 
-/** The subset of AnyListClient this adapter drives. */
-export interface AnyListClientLike {
-  createRecipe(options: CreateRecipeOptions): Promise<{ id: string; name: string }>;
-  getRecipeById(recipeId: string): Promise<{ id: string } | null>;
-}
+/**
+ * The isolated worker could not be started. Nothing was attempted, which is why
+ * this is classified alongside a login failure rather than an ambiguous one.
+ */
+const WORKER_UNAVAILABLE = "The AnyList worker process could not be started.";
 
-/** Connects and authenticates. Login failures surface here. */
-export type AnyListConnect = () => Promise<AnyListClientLike>;
+/**
+ * The isolated worker died, timed out, or answered in a shape we do not
+ * understand. It may already have written the recipe, so this is never treated
+ * as safe to retry.
+ */
+const WORKER_OUTCOME_UNKNOWN =
+  "The AnyList worker process did not report a usable outcome, so the save may or may not have completed.";
 
+/**
+ * Writes a canonical Recipe to AnyList through an isolated child process
+ * (ADR-023).
+ *
+ * This file — and every other file in production source — is forbidden from
+ * loading `@anylist-napi/anylist-napi`; only `./child/anylist-child.mjs` may,
+ * and `tests/architecture/anylist-import-boundary.test.ts` fails CI otherwise.
+ * The native library writes response metadata including `set-cookie` to file
+ * descriptor 2 from Rust, below any JavaScript interception, so the descriptor
+ * has to belong to a pipe we own rather than to the platform log.
+ *
+ * The externally observable contract is unchanged: the same `AnyListError`
+ * codes, the same message text, the same `(HTTP nnn)` suffix where a status was
+ * reachable, and the same `SaveResult`. What moved is where the native call
+ * happens, not what a caller sees.
+ */
 export class AnyListRecipeSaver implements RecipeSaver {
-  constructor(private readonly connect: AnyListConnect) {}
+  constructor(private readonly run: ChildRunner) {}
 
   /**
-   * Builds a saver from ANYLIST_EMAIL / ANYLIST_PASSWORD. The AnyList library is
-   * imported lazily so a dry run never loads it or its native binary.
+   * Builds a saver from ANYLIST_EMAIL / ANYLIST_PASSWORD.
+   *
+   * Credentials are validated here and then **not carried anywhere**: the child
+   * reads them from the inherited environment, so they appear in neither argv
+   * nor the request protocol. Authentication architecture is unchanged by this
+   * milestone.
    */
   static fromEnvironment(env: NodeJS.ProcessEnv = process.env): AnyListRecipeSaver {
     const email = env["ANYLIST_EMAIL"]?.trim();
@@ -35,78 +62,71 @@ export class AnyListRecipeSaver implements RecipeSaver {
     // matters downstream: no request was made, so no recipe can exist.
     if (!email || !password) throw new AnyListError(MISSING_CREDENTIALS, "login_failed");
 
-    return new AnyListRecipeSaver(async () => {
-      const { AnyListClient } = await import("@anylist-napi/anylist-napi");
-      // Tokens stay in memory for the life of the process. getTokens() is never
-      // called, so nothing is persisted to disk.
-      return AnyListClient.login(email, password);
-    });
+    return new AnyListRecipeSaver(createChildRunner());
   }
 
   async save(recipe: Recipe): Promise<SaveResult> {
-    const client = await this.login();
+    // Mapping is pure and needs no native code, so it stays in this process.
+    // Keeping it here is also what preserves `SaveResult.name`: it has always
+    // been the mapped payload's name, not anything AnyList echoed back.
     const payload = toAnyListRecipe(recipe);
 
-    let created: { id: string; name: string };
-    try {
-      // createRecipe IS the persisted write in this library; there is no save().
-      // Its returned id is client-generated, so it is not persistence evidence.
-      created = await client.createRecipe(payload);
-    } catch (error) {
-      throw new AnyListError(withStatus(SAVE_FAILED, error), "create_failed");
-    }
+    const outcome = await this.run({ operation: "save", payload });
 
-    await verifyPersisted(client, created.id);
+    if (!outcome.ok) throw runnerFailure(outcome.failure);
 
-    return { name: payload.name, identifier: created.id };
-  }
+    const response = outcome.response;
+    if (response.ok) return { name: payload.name, identifier: response.identifier };
 
-  private async login(): Promise<AnyListClientLike> {
-    try {
-      return await this.connect();
-    } catch (error) {
-      throw new AnyListError(withStatus(LOGIN_FAILED, error), "login_failed");
-    }
+    throw childFailure(response.code, response.httpStatus);
   }
 }
 
 /**
- * Confirms the recipe really persisted, by reading it back by id.
+ * Translates the child's closed vocabulary into the adapter's, preserving both
+ * the code and the exact message text callers have always seen.
+ */
+function childFailure(code: ChildFailureCode, httpStatus: number | null): AnyListError {
+  switch (code) {
+    case "missing_credentials":
+      return new AnyListError(MISSING_CREDENTIALS, "login_failed");
+    case "login_failed":
+      return new AnyListError(withStatus(LOGIN_FAILED, httpStatus), "login_failed");
+    case "create_failed":
+      return new AnyListError(withStatus(SAVE_FAILED, httpStatus), "create_failed");
+    case "verify_unreadable":
+      return new AnyListError(withStatus(VERIFY_UNREADABLE, httpStatus), "verify_unreadable");
+    case "verify_missing":
+      // Deliberately carries no status: the read succeeded, so there is no
+      // failing HTTP response to name. Unchanged from before containment.
+      return new AnyListError(VERIFY_MISSING, "verify_missing");
+    case "bad_request":
+      // The child rejected our request shape, which it does before touching the
+      // network. A parent/child mismatch is a bug, but it is a safe one.
+      return new AnyListError(WORKER_UNAVAILABLE, "login_failed");
+  }
+}
+
+/**
+ * Translates a transport-level failure of the worker itself.
  *
- * The id is generated client-side by the AnyList library, so createRecipe()
- * returning one is not proof of persistence — this read is. Note that
- * getRecipeById is targeted only in its API shape: the protocol exposes a
- * single read endpoint (data/user-data/get), so the library fetches the whole
- * user-data blob and filters client-side. It performs no write.
+ * The split is the same one the rest of the export path turns on: only positive
+ * evidence that no write was attempted may be reported as safe. A child that
+ * never started is safe. A child that died, timed out, or spoke nonsense may
+ * have reached `createRecipe` first, and a duplicate cannot be removed
+ * afterwards — `deleteRecipe()` returns success without deleting (ADR-021).
  */
-async function verifyPersisted(client: AnyListClientLike, id: string): Promise<void> {
-  let stored: { id: string } | null;
+function runnerFailure(failure: RunnerFailure): AnyListError {
+  if (failure === "spawn_failed") return new AnyListError(WORKER_UNAVAILABLE, "login_failed");
 
-  try {
-    stored = await client.getRecipeById(id);
-  } catch (error) {
-    throw new AnyListError(withStatus(VERIFY_UNREADABLE, error), "verify_unreadable");
-  }
-
-  if (stored?.id !== id) throw new AnyListError(VERIFY_MISSING, "verify_missing");
+  return new AnyListError(WORKER_OUTCOME_UNKNOWN, "create_failed");
 }
 
 /**
- * Appends an HTTP status when one is reachable as a plain number. Nothing else
- * from the underlying error is read — its message, stack, and any request or
- * response detail can carry the submitted credentials.
+ * Appends an HTTP status when the child was able to read one. The status code is
+ * the only provider-derived value permitted across the process boundary; no
+ * message, header, body, or stack crosses it.
  */
-function withStatus(message: string, error: unknown): string {
-  const status = readStatusCode(error);
+function withStatus(message: string, status: number | null): string {
   return status === null ? message : `${message} (HTTP ${status})`;
-}
-
-function readStatusCode(error: unknown): number | null {
-  if (typeof error !== "object" || error === null) return null;
-
-  const { response } = error as { response?: unknown };
-  if (typeof response !== "object" || response === null) return null;
-
-  const { statusCode } = response as { statusCode?: unknown };
-  return typeof statusCode === "number" ? statusCode : null;
 }
