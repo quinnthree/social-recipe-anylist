@@ -26,7 +26,7 @@ import {
 const T0 = Date.now();
 
 function claim(store: IsolatedIdempotencyStore, requestId: string, key = "k1") {
-  return store.claim({ key, fingerprint: "fp-a", requestId, now: T0, leaseMs: 150_000 });
+  return store.claim({ key, fingerprint: "fp-a", requestId, destinationBinding: "operator:v1", now: T0, leaseMs: 150_000 });
 }
 
 describe("two stores over one database", () => {

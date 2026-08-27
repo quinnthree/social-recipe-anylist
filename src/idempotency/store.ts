@@ -17,6 +17,17 @@ export interface StoredResult {
 export interface IdempotencyRecord {
   state: IdempotencyState;
   fingerprint: string;
+  /**
+   * Where this record's export was sent, as an opaque server-derived label
+   * (see `../anylist/destination.ts`). Written once, at first claim, and never
+   * rewritten by any later transition.
+   *
+   * `null` on records created before this field existed. Those are **not**
+   * migrated, rewritten, or treated as suspect: an absent binding means "not
+   * recorded", which is exactly what it was, and such a record behaves today
+   * precisely as it always has.
+   */
+  destinationBinding: string | null;
   /** The request that most recently claimed this key. */
   requestId: string;
   /** Epoch ms. Meaningful only while `state` is `IN_PROGRESS`. */
@@ -45,6 +56,12 @@ export interface ClaimRequest {
   key: string;
   fingerprint: string;
   requestId: string;
+  /**
+   * Recorded on a *fresh* claim only. Re-claiming an existing record — the
+   * `FAILED_SAFE` transition — leaves the stored binding untouched, so the
+   * record keeps saying where its first attempt was aimed.
+   */
+  destinationBinding: string;
   now: number;
   /** How long active execution is still expected. Not the record's TTL. */
   leaseMs: number;

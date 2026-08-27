@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { idempotencyKeyFor } from "../../src/test-support/idempotency-keys.js";
 import { describe, expect, it } from "vitest";
 
 import { MemoryClientCredentialStore } from "../../src/client/memory-store.js";
@@ -220,7 +221,7 @@ describe("an unavailable credential store", () => {
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${credential.token}`,
-        "idempotency-key": "key-1",
+        "idempotency-key": idempotencyKeyFor("key-1"),
       },
       payload: { schemaVersion: 1, recipe: validRecipe },
     });

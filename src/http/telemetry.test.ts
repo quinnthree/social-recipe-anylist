@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { idempotencyKeyFor } from "../test-support/idempotency-keys.js";
 
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
@@ -137,7 +138,7 @@ describe("ImportTelemetry", () => {
     await app.inject({
       method: "POST",
       url: "/api/exports/anylist",
-      headers: { ...AUTH, "idempotency-key": "k1" },
+      headers: { ...AUTH, "idempotency-key": idempotencyKeyFor("k1") },
       payload: exportBody(),
     });
 
@@ -161,7 +162,7 @@ describe("ImportTelemetry", () => {
       app.inject({
         method: "POST",
         url: "/api/exports/anylist",
-        headers: { ...AUTH, "idempotency-key": "k1" },
+        headers: { ...AUTH, "idempotency-key": idempotencyKeyFor("k1") },
         payload: exportBody(),
       });
 
@@ -227,7 +228,7 @@ describe("ImportTelemetry", () => {
     await app.inject({
       method: "POST",
       url: "/api/exports/anylist",
-      headers: { ...AUTH, "idempotency-key": "k1" },
+      headers: { ...AUTH, "idempotency-key": idempotencyKeyFor("k1") },
       payload: exportBody(),
     });
 
@@ -251,7 +252,7 @@ describe("ImportTelemetry", () => {
     await app.inject({
       method: "POST",
       url: "/api/exports/anylist",
-      headers: { ...AUTH, "idempotency-key": "k1" },
+      headers: { ...AUTH, "idempotency-key": idempotencyKeyFor("k1") },
       payload: exportBody(),
     });
 

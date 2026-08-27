@@ -55,22 +55,47 @@ export function checkSchemaVersion(body: unknown): VersionCheck {
   return { ok: true };
 }
 
-/** Control characters would corrupt a log line or a store key. */
-const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 
 /**
- * `Idempotency-Key` is required on the export route and opaque to us — we never
- * parse meaning out of it, only bound its length and refuse characters that
- * would corrupt the places it gets written.
+ * The canonical UUID text form, `8-4-4-4-12` hex, case-insensitive.
+ *
+ * Version and variant bits are deliberately **not** pinned. The purpose is
+ * shape and entropy, not provenance: a client emitting UUIDv7 keys is as
+ * collision-free as one emitting v4, and rejecting it would buy nothing. The
+ * native client already sends `UUID().uuidString`, so this promotes an existing
+ * convention into a contract rather than asking anyone to change.
+ *
+ * **This is not an authorization boundary.** It makes an accidental collision
+ * between two installations choosing the same key negligibly unlikely; it says
+ * nothing about who is entitled to a key. A client that repeats one fixed UUID
+ * for different recipes still gets `409 Idempotency key conflict`, which is the
+ * safe answer, so no degenerate value — the nil UUID included — is special-cased
+ * here.
+ */
+const UUID_SHAPE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * `Idempotency-Key` is required on the export route and stays opaque to us — we
+ * validate its shape and never parse meaning out of it.
+ *
+ * **An accepted value is returned exactly as supplied.** It is not trimmed,
+ * case-folded, parsed, or re-serialised, and it must never become any of those:
+ * `storeKey` hashes these bytes, every existing `idem:v1` record was written
+ * from the bytes a client actually sent, and a record keyed on a normalised
+ * variant would be invisible to the retry that created it — permitting a second
+ * AnyList write that ADR-021 says cannot be undone. Validation may reject a
+ * value; it may not transform one.
+ *
+ * The length bound is kept even though the shape already implies 36 characters,
+ * so the cheapest check still runs first on a hostile input.
  */
 export function readIdempotencyKey(header: unknown): string | null {
   const value = Array.isArray(header) ? header[0] : header;
 
   if (typeof value !== "string") return null;
   if (value.length === 0 || value.length > MAX_IDEMPOTENCY_KEY_LENGTH) return null;
-  if (CONTROL_CHARACTERS.test(value)) return null;
-  if (value.trim().length === 0) return null;
+  if (!UUID_SHAPE.test(value)) return null;
 
   return value;
 }

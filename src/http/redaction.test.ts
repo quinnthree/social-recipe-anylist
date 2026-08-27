@@ -22,7 +22,9 @@ const API_KEY = "RECIPE-KEY-zzq7Xk92";
 const ANYLIST_PASSWORD = "ANYLIST-PW-vv41Qm";
 const ANTHROPIC_KEY = "sk-ant-LEAK-93hd8";
 const ANYLIST_TOKEN = "ANYLIST-TOKEN-ff02Nb";
-const IDEMPOTENCY_KEY = "IDEMPOTENCY-KEY-uu83Zt";
+// UUID-shaped, because the export route now requires it, and still a planted
+// value: the assertion is that this exact string never reaches a log line.
+const IDEMPOTENCY_KEY = "9f1c2a77-4b3e-4d51-8a6f-2c7e5b91d0a4";
 
 /**
  * A consumer installation credential (ADR-026), fixed rather than minted so a

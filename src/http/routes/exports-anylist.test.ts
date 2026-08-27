@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { idempotencyKeyFor } from "../../test-support/idempotency-keys.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { ExportError } from "../../app/export-service.js";
@@ -55,12 +56,21 @@ function post(
   app: FastifyInstance,
   options: {
     auth?: string;
+    /** A label, mapped to a stable UUID. Use `rawKey` to send an exact string. */
     key?: string | null;
+    /** Sent verbatim, for tests about what the validator rejects. */
+    rawKey?: string;
     payload?: unknown;
     headers?: Record<string, string>;
   } = {},
 ) {
   const key = options.key === undefined ? "client-key-1" : options.key;
+  const header =
+    options.rawKey !== undefined
+      ? { "idempotency-key": options.rawKey }
+      : key === null
+        ? {}
+        : { "idempotency-key": idempotencyKeyFor(key) };
 
   return app.inject({
     method: "POST",
@@ -68,7 +78,7 @@ function post(
     headers: {
       "content-type": "application/json",
       ...(options.auth === undefined ? {} : { authorization: options.auth }),
-      ...(key === null ? {} : { "idempotency-key": key }),
+      ...header,
       ...options.headers,
     },
     payload: options.payload ?? exportBody(),
@@ -148,23 +158,34 @@ describe("POST /api/exports/anylist", () => {
       expect(exportRecipe).not.toHaveBeenCalled();
     });
 
-    it("accepts 1 and 128 characters", async () => {
+    it("accepts a UUID in either case, and preserves it verbatim", async () => {
       const { app } = harness();
+      const lower = "b3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5e";
 
-      expect((await post(app, { auth: bearer(), key: "a" })).statusCode).toBe(200);
-      expect((await post(app, { auth: bearer(), key: "b".repeat(128) })).statusCode).toBe(200);
+      expect((await post(app, { auth: bearer(), rawKey: lower })).statusCode).toBe(200);
+      expect(
+        (await post(app, { auth: bearer(), rawKey: lower.toUpperCase() })).statusCode,
+      ).toBe(200);
     });
 
-    it("rejects 129 characters", async () => {
-      const { app } = harness();
+    it.each([
+      ["a short opaque string", "a"],
+      ["128 arbitrary characters", "b".repeat(128)],
+      ["129 characters", "c".repeat(129)],
+      ["whitespace only", "   "],
+      ["a UUID with surrounding whitespace", " b3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5e "],
+      ["a UUID missing its separators", "b3f1c2d45e6a4b7c8d9e0f1a2b3c4d5e"],
+      ["a UUID with a non-hex character", "g3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5e"],
+      ["a UUID with a group of the wrong length", "b3f1c2d-45e6a-4b7c-8d9e-0f1a2b3c4d5e"],
+      ["a UUID with trailing content", "b3f1c2d4-5e6a-4b7c-8d9e-0f1a2b3c4d5ex"],
+    ])("rejects %s", async (_label, rawKey) => {
+      const { app, exportRecipe } = harness();
+      const response = await post(app, { auth: bearer(), rawKey });
 
-      expect((await post(app, { auth: bearer(), key: "c".repeat(129) })).statusCode).toBe(400);
-    });
-
-    it("rejects a whitespace-only key", async () => {
-      const { app } = harness();
-
-      expect((await post(app, { auth: bearer(), key: "   " })).statusCode).toBe(400);
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toBe("Invalid idempotency key");
+      // Rejected before the store and before any AnyList call.
+      expect(exportRecipe).not.toHaveBeenCalled();
     });
   });
 

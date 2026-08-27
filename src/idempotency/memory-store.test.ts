@@ -19,7 +19,7 @@ function claimAt(
   return store.claim({
     key: KEY,
     fingerprint: PRINT,
-    requestId: "req_1",
+    requestId: "req_1", destinationBinding: "operator:v1",
     now,
     leaseMs: LEASE_MS,
     ...overrides,

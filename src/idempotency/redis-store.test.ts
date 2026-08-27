@@ -8,6 +8,7 @@ const CLAIM = {
   key: KEY,
   fingerprint: "print-a",
   requestId: "req_1",
+  destinationBinding: "operator:v1",
   now: 1_700_000_000_000,
   leaseMs: 150_000,
 };
@@ -88,6 +89,9 @@ describe("RedisIdempotencyStore", () => {
         CLAIM.leaseMs,
         RETENTION_SECONDS.IN_PROGRESS,
         RETENTION_SECONDS.AMBIGUOUS,
+        // Appended, never inserted: the script reads positionally, so a new
+        // argument goes on the end or every existing branch shifts.
+        "operator:v1",
       ],
     );
   });
@@ -153,7 +157,7 @@ describe("RedisIdempotencyStore", () => {
     expect(RETENTION_SECONDS.AMBIGUOUS).toBe(30 * 24 * 60 * 60);
   });
 
-  it("reads a stored record back", async () => {
+  it("reads a stored record back, reporting a legacy record's absent binding as null", async () => {
     const store = new RedisIdempotencyStore({
       eval: async () => 1,
       hgetall: async () => ({
@@ -170,6 +174,10 @@ describe("RedisIdempotencyStore", () => {
     expect(await store.read(KEY)).toEqual({
       state: "AMBIGUOUS",
       fingerprint: "print-a",
+      // The stub carries no `destinationBinding`, which is exactly the shape of
+      // a record written before the field existed. It reads as null — "not
+      // recorded" — and is never defaulted to a destination it never named.
+      destinationBinding: null,
       requestId: "req_1",
       leaseExpiresAt: 1_700_000_150_000,
       result: null,

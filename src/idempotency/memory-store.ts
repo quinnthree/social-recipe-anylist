@@ -38,11 +38,23 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
   }
 
   /** Synchronous by design — see the note on atomicity above. */
-  private claimSync({ key, fingerprint, requestId, now, leaseMs }: ClaimRequest): ClaimResult {
+  private claimSync({
+    key,
+    fingerprint,
+    requestId,
+    destinationBinding,
+    now,
+    leaseMs,
+  }: ClaimRequest): ClaimResult {
     const existing = this.live(key, now);
 
     if (existing === null) {
-      this.write(key, freshClaim(fingerprint, requestId, now, leaseMs), RETENTION_SECONDS.IN_PROGRESS, now);
+      this.write(
+        key,
+        freshClaim(fingerprint, requestId, destinationBinding, now, leaseMs),
+        RETENTION_SECONDS.IN_PROGRESS,
+        now,
+      );
       return { status: "claimed" };
     }
 
@@ -65,7 +77,15 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
       case "FAILED_SAFE":
         this.write(
           key,
-          { ...freshClaim(fingerprint, requestId, now, leaseMs), createdAt: existing.createdAt },
+          {
+            ...freshClaim(fingerprint, requestId, destinationBinding, now, leaseMs),
+            createdAt: existing.createdAt,
+            // The *existing* binding, never the incoming one. A re-claim
+            // continues a record whose first attempt already chose a
+            // destination; overwriting it here would let a record quietly
+            // change what it says it targeted.
+            destinationBinding: existing.destinationBinding,
+          },
           RETENTION_SECONDS.IN_PROGRESS,
           now,
         );
@@ -158,12 +178,14 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
 function freshClaim(
   fingerprint: string,
   requestId: string,
+  destinationBinding: string,
   now: number,
   leaseMs: number,
 ): IdempotencyRecord {
   return {
     state: "IN_PROGRESS",
     fingerprint,
+    destinationBinding,
     requestId,
     leaseExpiresAt: now + leaseMs,
     result: null,

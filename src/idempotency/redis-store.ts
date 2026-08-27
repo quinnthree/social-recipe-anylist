@@ -34,6 +34,12 @@ export interface RedisLike {
  * TTL preserves the record; `leaseExpiresAt` says whether anyone is still
  * working on it. Collapsing the two would let a key return to unseen by ageing,
  * and a second AnyList write would happen solely because time passed.
+ *
+ * `destinationBinding` is written by the fresh-claim branch **only**. Every
+ * other branch names the fields it sets, so the binding survives the
+ * `FAILED_SAFE` re-claim and the stale-lease conversion untouched — immutability
+ * here is a property of what the script does not write, and adding a field to
+ * any other `HSET` would silently break it.
  */
 export const CLAIM_SCRIPT = `
 local key = KEYS[1]
@@ -43,6 +49,7 @@ local now = tonumber(ARGV[3])
 local leaseMs = tonumber(ARGV[4])
 local inProgressTtl = tonumber(ARGV[5])
 local ambiguousTtl = tonumber(ARGV[6])
+local destinationBinding = ARGV[7]
 
 local state = redis.call('HGET', key, 'state')
 
@@ -53,7 +60,8 @@ if not state then
     'requestId', requestId,
     'leaseExpiresAt', string.format('%d', now + leaseMs),
     'createdAt', string.format('%d', now),
-    'updatedAt', string.format('%d', now))
+    'updatedAt', string.format('%d', now),
+    'destinationBinding', destinationBinding)
   redis.call('EXPIRE', key, inProgressTtl)
   return {'claimed'}
 end
@@ -159,7 +167,14 @@ export class RedisIdempotencyStore implements IdempotencyStore {
     });
   }
 
-  async claim({ key, fingerprint, requestId, now, leaseMs }: ClaimRequest): Promise<ClaimResult> {
+  async claim({
+    key,
+    fingerprint,
+    requestId,
+    destinationBinding,
+    now,
+    leaseMs,
+  }: ClaimRequest): Promise<ClaimResult> {
     const reply = asArray(
       await this.redis.eval(CLAIM_SCRIPT, [key], [
         fingerprint,
@@ -168,6 +183,7 @@ export class RedisIdempotencyStore implements IdempotencyStore {
         leaseMs,
         RETENTION_SECONDS.IN_PROGRESS,
         RETENTION_SECONDS.AMBIGUOUS,
+        destinationBinding,
       ]),
     );
 
@@ -220,6 +236,11 @@ export class RedisIdempotencyStore implements IdempotencyStore {
     return {
       state: String(raw["state"]) as IdempotencyRecord["state"],
       fingerprint: String(raw["fingerprint"] ?? ""),
+      // Absent on records written before this field existed. Reported as null
+      // rather than defaulted, so "not recorded" stays distinguishable from
+      // "recorded as the operator account".
+      destinationBinding:
+        raw["destinationBinding"] === undefined ? null : String(raw["destinationBinding"]),
       requestId: String(raw["requestId"] ?? ""),
       leaseExpiresAt: Number(raw["leaseExpiresAt"] ?? 0),
       result: parseResult(raw["result"]),
