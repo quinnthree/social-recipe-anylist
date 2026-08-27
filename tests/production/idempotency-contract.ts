@@ -162,12 +162,19 @@ export function runIdempotencyStoreConformance({
   const retentionMode = retentionModeFor({ supportsLogicalTimeTravel, readTtlSeconds });
   const claim = (
     store: IdempotencyStore,
-    over: Partial<{ key: string; fingerprint: string; requestId: string; now: number }> = {},
+    over: Partial<{
+      key: string;
+      fingerprint: string;
+      requestId: string;
+      destinationBinding: string;
+      now: number;
+    }> = {},
   ) =>
     store.claim({
       key: over.key ?? "k1",
       fingerprint: over.fingerprint ?? "fp-a",
       requestId: over.requestId ?? "req-1",
+      destinationBinding: over.destinationBinding ?? "operator:v1",
       now: over.now ?? T0,
       leaseMs: LEASE_MS,
     });

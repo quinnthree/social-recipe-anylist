@@ -9,6 +9,7 @@ import { buildServer } from "../../src/http/server.js";
 import { MemoryIdempotencyStore } from "../../src/idempotency/memory-store.js";
 import { RecipeSchema, type Recipe } from "../../src/recipe/schema.js";
 import { gap } from "./contract-gaps.js";
+import { idempotencyKeyFor } from "../../src/test-support/idempotency-keys.js";
 
 /**
  * POST /api/exports/anylist — export only. Independent verification against the
@@ -27,7 +28,11 @@ import { gap } from "./contract-gaps.js";
 
 const API_KEY = "test-api-key-2f8c1d";
 const AUTH = { authorization: `Bearer ${API_KEY}` };
-const KEY = (key: string) => ({ ...AUTH, "idempotency-key": key });
+/** A label, mapped to a stable UUID. */
+const KEY = (key: string) => ({ ...AUTH, "idempotency-key": idempotencyKeyFor(key) });
+
+/** An exact header value, for tests about what the validator rejects. */
+const RAW_KEY = (key: string) => ({ ...AUTH, "idempotency-key": key });
 
 const golden = fixture("tiktok-cottage-cheese-brownies");
 const recipe = requireRecipe(golden);
@@ -357,19 +362,25 @@ describe("Idempotency-Key is required", () => {
   it.each([
     ["an empty key", ""],
     ["a 129-character key", "x".repeat(129)],
+    ["an opaque non-UUID key", "client-key-1"],
+    ["a whitespace-only key", "   "],
+    ["a UUID with surrounding whitespace", " 7c9e6679-7425-40de-944b-e07fc1f90ae7 "],
+    ["a UUID missing its separators", "7c9e6679742540de944be07fc1f90ae7"],
   ])("rejects %s", async (_label, key) => {
     const { app, exportRecipe } = server();
-    const response = await post(app, validBody, KEY(key));
+    const response = await post(app, validBody, RAW_KEY(key));
 
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toBe("Invalid idempotency key");
     expect(exportRecipe).not.toHaveBeenCalled();
   });
 
-  it("accepts a key at the 128-character boundary", async () => {
+  it("accepts a UUID in either case", async () => {
     const { app } = server();
+    const key = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 
-    expect((await post(app, validBody, KEY("x".repeat(128)))).statusCode).toBe(200);
+    expect((await post(app, validBody, RAW_KEY(key))).statusCode).toBe(200);
+    expect((await post(app, validBody, RAW_KEY(key.toUpperCase()))).statusCode).toBe(200);
   });
 });
 

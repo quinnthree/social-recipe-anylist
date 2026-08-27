@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
+import { resolveDestinationBinding } from "../../anylist/destination.js";
 import { ExportError } from "../../app/export-service.js";
 import { storeKey, type ClaimResult, type StoredResult } from "../../idempotency/store.js";
 import type { RouteContext } from "../context.js";
@@ -88,6 +89,10 @@ export function registerExportRoute(server: FastifyInstance, context: RouteConte
         key,
         fingerprint,
         requestId,
+        // Server-derived, never from the body and never from a header: a client
+        // able to name its own destination could aim a replay at an account
+        // that is not its own.
+        destinationBinding: resolveDestinationBinding(),
         now,
         leaseMs: context.leaseMs,
       });

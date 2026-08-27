@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { idempotencyKeyFor } from "../../src/test-support/idempotency-keys.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { MemoryClientCredentialStore } from "../../src/client/memory-store.js";
@@ -60,7 +61,7 @@ function exports(app: FastifyInstance, auth: string, key: string) {
     headers: {
       "content-type": "application/json",
       authorization: auth,
-      "idempotency-key": key,
+      "idempotency-key": idempotencyKeyFor(key),
     },
     payload: exportBody() as never,
   });

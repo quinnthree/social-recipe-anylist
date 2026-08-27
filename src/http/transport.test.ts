@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { idempotencyKeyFor } from "../test-support/idempotency-keys.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -45,7 +46,9 @@ describe("X-Request-Id", () => {
       {
         method: "POST" as const,
         url: "/api/exports/anylist",
-        headers: { ...AUTH, "idempotency-key": "k" },
+        // A valid key, so this case still exercises the recipe rejection it
+        // was written for rather than being short-circuited by key validation.
+        headers: { ...AUTH, "idempotency-key": "3f7b1e40-9c2d-4a68-b1f5-7e0a6c48d213" },
         payload: { schemaVersion: 1, recipe: { ...validRecipe, title: "  " } },
       },
       400,
@@ -123,7 +126,7 @@ describe("413 Request body too large", () => {
     const response = await app().inject({
       method: "POST",
       url: "/api/exports/anylist",
-      headers: { ...AUTH, "idempotency-key": "k1" },
+      headers: { ...AUTH, "idempotency-key": idempotencyKeyFor("k1") },
       payload: exportBody(wordy as never),
     });
 
@@ -139,7 +142,7 @@ describe("413 Request body too large", () => {
     const response = await app().inject({
       method: "POST",
       url: "/api/exports/anylist",
-      headers: { ...AUTH, "idempotency-key": "k2" },
+      headers: { ...AUTH, "idempotency-key": idempotencyKeyFor("k2") },
       payload: exportBody(enormous as never),
     });
 
