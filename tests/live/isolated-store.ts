@@ -119,6 +119,33 @@ export async function readTestKeyTtlSeconds(
 }
 
 /**
+ * Removes one field from a test-owned record.
+ *
+ * This exists for a single case: a record written before `destinationBinding`
+ * existed. Every claim now writes the field, so the only way to observe a
+ * genuinely legacy record against real Redis is to take it back off — and that
+ * needs a raw command the store interface does not expose.
+ *
+ * Test-owned keys only, guarded identically to `readTestKeyTtlSeconds`. A raw
+ * mutating command aimed at the production database is precisely where the
+ * prefix check has to be a property rather than an intention.
+ */
+export async function deleteTestKeyField(
+  physicalKey: string,
+  field: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  if (!physicalKey.startsWith(TEST_KEY_PREFIX)) {
+    throw new Error(`Refusing to modify ${physicalKey}: live tests mutate only their own keys.`);
+  }
+
+  const client = await upstashClient(env);
+  if (client === null) throw new Error("Upstash is not configured.");
+
+  await client.hdel(physicalKey, field);
+}
+
+/**
  * Removes exactly the keys this process created, and refuses anything else.
  *
  * Cleanup is a courtesy, not the isolation mechanism: the suite exercises
@@ -156,7 +183,11 @@ export async function deleteRecordedTestKeys(
 
 async function upstashClient(
   env: NodeJS.ProcessEnv,
-): Promise<{ del(...keys: string[]): Promise<number>; ttl(key: string): Promise<number> } | null> {
+): Promise<{
+  del(...keys: string[]): Promise<number>;
+  ttl(key: string): Promise<number>;
+  hdel(key: string, ...fields: string[]): Promise<number>;
+} | null> {
   const url = env["KV_REST_API_URL"] ?? env["UPSTASH_REDIS_REST_URL"];
   const token = env["KV_REST_API_TOKEN"] ?? env["UPSTASH_REDIS_REST_TOKEN"];
   if (!url || !token) return null;
