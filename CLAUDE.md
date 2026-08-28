@@ -154,17 +154,27 @@ Shortcut.
 
 ## Known Issues
 
-### prepTime / cookTime
+### prepTime / cookTime — AnyList stores these in seconds
 
-An earlier note in this file claimed these persist as 0. That is **not**
-supported by research. A recipe created with prepTime=15 and cookTime=40 was
-read back correctly via getRecipeById().
+The canonical Recipe carries prepTime/cookTime in **minutes**. AnyList's numeric
+fields are **seconds**. src/anylist/mapping.ts converts at the adapter boundary
+and nowhere else; do not change canonical units to match a destination.
 
-The mapping sends minMinutes, and every explicitly stated time is also written
-into the recipe note. The note behaviour stays for now as **conservative
-compatibility behaviour** — it is information-preserving, harmless, and the only
-place a stated range survives at all, since AnyList holds a single integer. It is
-not retained because a zero-persistence bug is currently proven.
+Confirmed on a physical device (2026-08-28): an export carrying a canonical
+prepTime of 120 minutes displayed as "2 min" in the AnyList app.
+
+Two earlier notes here were wrong and are superseded. These do **not** persist as
+0 — a recipe created with prepTime=15 and cookTime=40 read back unchanged via
+getRecipeById(). And the mapping does **not** send raw minMinutes any more.
+
+Worth remembering why the unit bug survived a round-trip test: getRecipeById()
+returns the same integer that was written, so read and write agreed with each
+other while neither agreed with the unit the app renders. A value that survives a
+round trip is proven *stored*, not proven *understood*.
+
+Every explicitly stated time is also written into the recipe note, in minutes and
+as stated. That stays — it is information-preserving and the only place a stated
+range survives at all, since AnyList holds a single integer per time.
 
 ### Recipe identifiers
 

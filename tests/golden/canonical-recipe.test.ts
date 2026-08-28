@@ -112,15 +112,16 @@ describe("the AnyList export adapter, over the golden corpus", () => {
   it("flattens a range to its lower bound and preserves the range in the note", () => {
     const mapped = toAnyListRecipe(recipeFor("tiktok-cook-time-range"));
 
-    expect(mapped.cookTime).toBe(90);
+    // The lower bound, in AnyList's seconds; the note keeps the stated range.
+    expect(mapped.cookTime).toBe(5400);
     expect(mapped.note).toBe("Cook time stated in source: 90–120 minutes");
   });
 
   it("sends both stated times, and records both in the note", () => {
     const mapped = toAnyListRecipe(recipeFor("tiktok-chicken-tinga"));
 
-    expect(mapped.prepTime).toBe(15);
-    expect(mapped.cookTime).toBe(30);
+    expect(mapped.prepTime).toBe(900);
+    expect(mapped.cookTime).toBe(1800);
     expect(mapped.note).toBe(
       "Prep time stated in source: 15 minutes\nCook time stated in source: 30 minutes",
     );

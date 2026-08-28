@@ -69,13 +69,36 @@ describe("toAnyListRecipe", () => {
   });
 
   describe("time", () => {
-    it("sends an exact time as minutes, not seconds", () => {
+    // AnyList stores these as seconds; the canonical model carries minutes.
+    // Confirmed on a physical device on 2026-08-28, where a canonical 120
+    // minutes displayed as "2 min" — the raw minute value read as seconds.
+    // A `getRecipeById` round trip agreed with itself and told us nothing,
+    // which is why the earlier assertion here was confidently wrong.
+    it("converts an exact time from minutes to seconds", () => {
       const mapped = toAnyListRecipe(
         recipe({ cookTime: { minMinutes: 40, maxMinutes: null } }),
       );
 
-      expect(mapped.cookTime).toBe(40);
-      expect(mapped.cookTime).not.toBe(40 * 60);
+      expect(mapped.cookTime).toBe(2400);
+      expect(mapped.cookTime).not.toBe(40);
+    });
+
+    it.each([
+      ["prepTime", 2, 120],
+      ["prepTime", 120, 7200],
+      ["cookTime", 40, 2400],
+      ["cookTime", 1, 60],
+    ] as const)("sends %s of %i minutes as %i seconds", (field, minutes, seconds) => {
+      const mapped = toAnyListRecipe(recipe({ [field]: { minMinutes: minutes, maxMinutes: null } }));
+
+      expect(mapped[field]).toBe(seconds);
+    });
+
+    it("leaves the note in minutes, because that is what a person reads", () => {
+      const mapped = toAnyListRecipe(recipe({ prepTime: { minMinutes: 120, maxMinutes: null } }));
+
+      expect(mapped.prepTime).toBe(7200);
+      expect(mapped.note).toBe("Prep time stated in source: 120 minutes");
     });
 
     it("records an exact time in the note as well as the numeric field", () => {
@@ -91,7 +114,7 @@ describe("toAnyListRecipe", () => {
         recipe({ cookTime: { minMinutes: 35, maxMinutes: 40 } }),
       );
 
-      expect(mapped.cookTime).toBe(35);
+      expect(mapped.cookTime).toBe(2100);
       expect(mapped.note).toBe("Cook time stated in source: 35–40 minutes");
     });
 
@@ -103,7 +126,7 @@ describe("toAnyListRecipe", () => {
         const mapped = toAnyListRecipe(recipe({ cookTime: { minMinutes: 40, maxMinutes: null } }));
 
         expect(mapped.note).toBe("Cook time stated in source: 40 minutes");
-        expect(mapped.cookTime).toBe(40);
+        expect(mapped.cookTime).toBe(2400);
       });
 
       it("renders maxMinutes === minMinutes as the same single time", () => {
@@ -111,14 +134,14 @@ describe("toAnyListRecipe", () => {
 
         expect(mapped.note).toBe("Cook time stated in source: 40 minutes");
         expect(mapped.note).not.toContain("40–40");
-        expect(mapped.cookTime).toBe(40);
+        expect(mapped.cookTime).toBe(2400);
       });
 
       it("still renders a genuine range as a range", () => {
         const mapped = toAnyListRecipe(recipe({ cookTime: { minMinutes: 35, maxMinutes: 40 } }));
 
         expect(mapped.note).toBe("Cook time stated in source: 35–40 minutes");
-        expect(mapped.cookTime).toBe(35);
+        expect(mapped.cookTime).toBe(2100);
       });
 
       // TimeRangeSchema does not order the bounds, so an inverted pair is
@@ -134,7 +157,7 @@ describe("toAnyListRecipe", () => {
         const mapped = toAnyListRecipe(recipe({ prepTime: { minMinutes: 15, maxMinutes: 15 } }));
 
         expect(mapped.note).toBe("Prep time stated in source: 15 minutes");
-        expect(mapped.prepTime).toBe(15);
+        expect(mapped.prepTime).toBe(900);
       });
     });
 
@@ -143,8 +166,9 @@ describe("toAnyListRecipe", () => {
         recipe({ cookTime: { minMinutes: 30, maxMinutes: 60 } }),
       );
 
-      expect(mapped.cookTime).toBe(30);
-      expect(mapped.cookTime).not.toBe(45);
+      // The lower bound, converted — never the midpoint, converted or otherwise.
+      expect(mapped.cookTime).toBe(1800);
+      expect(mapped.cookTime).not.toBe(45 * 60);
     });
 
     it("does the equivalent for an exact prep time", () => {
@@ -152,7 +176,7 @@ describe("toAnyListRecipe", () => {
         recipe({ prepTime: { minMinutes: 15, maxMinutes: null } }),
       );
 
-      expect(mapped.prepTime).toBe(15);
+      expect(mapped.prepTime).toBe(900);
       expect(mapped.note).toBe("Prep time stated in source: 15 minutes");
     });
 
@@ -161,7 +185,7 @@ describe("toAnyListRecipe", () => {
         recipe({ prepTime: { minMinutes: 20, maxMinutes: 25 } }),
       );
 
-      expect(mapped.prepTime).toBe(20);
+      expect(mapped.prepTime).toBe(1200);
       expect(mapped.note).toBe("Prep time stated in source: 20–25 minutes");
     });
 
@@ -198,8 +222,8 @@ describe("toAnyListRecipe", () => {
         }),
       );
 
-      expect(mapped.prepTime).toBe(15);
-      expect(mapped.cookTime).toBe(35);
+      expect(mapped.prepTime).toBe(900);
+      expect(mapped.cookTime).toBe(2100);
       expect(mapped.note).toBe(
         "Prep time stated in source: 15 minutes\n" +
           "Cook time stated in source: 35–40 minutes",

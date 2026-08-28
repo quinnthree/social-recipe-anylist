@@ -79,7 +79,8 @@ describe("AnyListRecipeSaver.save", () => {
       sourceName: "creator",
       servings: "9",
       note: "Cook time stated in source: 35–40 minutes",
-      cookTime: 35,
+      // Seconds: the adapter converts canonical minutes at this boundary.
+      cookTime: 2100,
     });
   });
 
