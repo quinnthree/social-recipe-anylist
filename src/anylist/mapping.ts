@@ -4,6 +4,22 @@ import type { CreateRecipeOptions, IngredientInput } from "./types.js";
 const EN_DASH = "–";
 
 /**
+ * AnyList stores `prepTime` and `cookTime` as **seconds**, while the canonical
+ * Recipe carries **minutes**.
+ *
+ * Established by physical-device verification on 2026-08-28: a recipe exported
+ * with a canonical `prepTime` of 120 minutes displayed as "2 min" in the AnyList
+ * app — exactly 120 interpreted as seconds. Round-tripping through
+ * `getRecipeById` could never have caught this: the field is stored and returned
+ * unchanged, so both sides of the read agreed with each other and neither
+ * agreed with the unit the app renders.
+ *
+ * The conversion belongs here and nowhere else. The canonical model stays in
+ * minutes, and this adapter is the only place that speaks AnyList's units.
+ */
+const SECONDS_PER_MINUTE = 60;
+
+/**
  * Maps a validated Recipe onto the AnyList payload. Pure: no I/O and no runtime
  * dependency on the AnyList library, so it is fully testable without live calls.
  *
@@ -27,18 +43,27 @@ export function toAnyListRecipe(recipe: Recipe): CreateRecipeOptions {
   // Losslessly textual: AnyList's servings field is a string. No invented units.
   if (recipe.servings !== null) options.servings = `${recipe.servings}`;
 
-  // Minutes, not seconds. The library has a known bug where these persist as 0;
-  // they are sent anyway so a future fix upstream benefits us automatically,
-  // and buildNote preserves the stated time regardless.
-  if (recipe.prepTime !== null) options.prepTime = recipe.prepTime.minMinutes;
-  if (recipe.cookTime !== null) options.cookTime = recipe.cookTime.minMinutes;
+  // Converted to AnyList's seconds. A range sends its lower bound and never an
+  // average; `buildNote` preserves what the source actually stated.
+  if (recipe.prepTime !== null) options.prepTime = toAnyListSeconds(recipe.prepTime);
+  if (recipe.cookTime !== null) options.cookTime = toAnyListSeconds(recipe.cookTime);
 
   return options;
 }
 
+/** Canonical minutes to the seconds AnyList's numeric time fields expect. */
+function toAnyListSeconds(time: TimeRange): number {
+  return time.minMinutes * SECONDS_PER_MINUTE;
+}
+
 /**
- * The recipe note carries every explicitly stated time, not just ranges, because
- * the numeric prepTime/cookTime fields currently persist as 0 upstream.
+ * The recipe note carries every explicitly stated time, in minutes and as
+ * written.
+ *
+ * The numeric fields hold a single lower bound; the note is the only place a
+ * stated *range* survives, since AnyList has one integer per time. It is
+ * information-preserving and costs nothing, so it stays now that the numeric
+ * fields are correct too.
  */
 export function buildNote(recipe: Recipe): string | undefined {
   const lines: string[] = [];

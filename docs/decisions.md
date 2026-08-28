@@ -17,7 +17,8 @@ post. It carries no destination-specific fields, encodes no destination
 limitations, and is never shaped to match AnyList.
 
 **Why.** Destination formats are lossy in ways the source is not. AnyList stores
-a single integer for cook time; sources routinely state "35–40 minutes". If the
+a single integer for cook time — in seconds, where the canonical model uses
+minutes; sources routinely state "35–40 minutes". If the
 model matched the destination, that information would be destroyed at extraction
 time, before any human could review it. Keeping the model neutral means loss
 happens once, late, and visibly — in the adapter.
@@ -43,8 +44,22 @@ extraction pipeline and CLI orchestration needed no changes.
 
 **Consequences.** Destination-specific compromises are adapter-local: the
 range-to-lower-bound flattening, the note-based time preservation, the dropping
-of `rawText`, the seconds-to-minutes correction. A second destination is a new
-adapter, not a refactor.
+of `rawText`, and the minutes-to-seconds unit conversion. A second destination is
+a new adapter, not a refactor.
+
+**Amended 2026-08-28 (M5G-B1).** The direction of that conversion is stated above
+as it actually is: the canonical model carries **minutes**, AnyList's numeric
+`prepTime`/`cookTime` are **seconds**, and `src/anylist/mapping.ts` multiplies on
+the way out. Earlier text here described a "seconds-to-minutes correction", which
+had the direction backwards and did not match the code, which sent the raw minute
+value.
+
+Established by physical-device verification: an export carrying a canonical
+`prepTime` of 120 minutes rendered as **"2 min"** in the AnyList app. Note what
+did *not* catch it — a `getRecipeById` round trip returns the same integer that
+was written, so read and write agreed with each other while neither agreed with
+the unit the app displays. That this ADR keeps the compromise adapter-local is
+what made the fix a change to one boundary rather than to the model.
 
 ---
 

@@ -33,9 +33,10 @@ This is what keeps AnyList replaceable. AnyList is the primary — and in V1, th
 only — destination, but it is an **export adapter**, not the model. Concretely:
 
 - The canonical Recipe holds `prepTime`/`cookTime` as `{minMinutes, maxMinutes}`
-  ranges. AnyList holds a single integer of minutes. The **adapter** flattens to
-  the lower bound and preserves the full range in the AnyList note. That
-  compromise lives in the adapter, not in the model.
+  ranges **in minutes**. AnyList holds a single integer **in seconds**. The
+  **adapter** converts the unit and flattens to the lower bound, preserving the
+  full stated range in the AnyList note. Both compromises live in the adapter,
+  not in the model.
 - The canonical Recipe holds `rawText` per ingredient. AnyList has no field for
   it. The adapter drops it on the way out; the model keeps it.
 - The canonical Recipe holds `confidence` and `warnings`. These are ours. They
@@ -181,17 +182,32 @@ createRecipe()  →  getRecipeById()  →  verify the recipe is really there
 
 Idempotency is **not** being redesigned around caller-controlled recipe ids.
 
-### prepTime / cookTime do persist
+### prepTime / cookTime persist, and AnyList stores them in seconds
 
-**Correcting earlier documentation.** Research successfully created a recipe
-with `prepTime=15` and `cookTime=40` and read both back correctly. The earlier
-claim that these always persist as `0` is **not supported**.
+**Current behaviour.** The canonical Recipe carries these in **minutes**; the
+AnyList numeric fields are **seconds**; `src/anylist/mapping.ts` converts at the
+adapter boundary and nowhere else.
 
-The note-based time preservation stays for now. It is
-**conservative compatibility behaviour** — information-preserving, harmless, and
-the only place a stated *range* survives at all, since AnyList holds a single
-integer. It is no longer described as a workaround for a proven zero-persistence
-bug. It is not removed during Milestone 4.
+Two earlier claims are superseded:
+
+1. *"These persist as `0`."* Not supported. Research created a recipe with
+   `prepTime=15` and `cookTime=40` and read both back unchanged.
+2. *"These are minutes, not seconds."* **Wrong, and corrected 2026-08-28.** A
+   physical-device export carrying a canonical `prepTime` of 120 minutes
+   displayed as **"2 min"** in the AnyList app — the raw minute value being read
+   as seconds.
+
+The instructive part is *why* the second claim survived a round-trip test. A
+`getRecipeById` read returns the same integer that was written, so both sides
+agreed with each other while neither agreed with the unit the app renders.
+Persistence and interpretation are different questions, and only the app's own
+UI could answer the second one. Treat a value that survives a round trip as
+*stored*, not as *understood*.
+
+The note-based time preservation stays. It is information-preserving, costs
+nothing, and remains the only place a stated *range* survives at all, since
+AnyList holds a single integer per time. It is no longer a workaround for
+anything — the numeric fields are now correct too.
 
 ### Native stderr can leak, and redaction does not stop it
 
@@ -345,6 +361,9 @@ that exists.
 4. **Corrected 2026-08-21.** `src/anylist/client.ts` comments, the affected test
    descriptions, and `CLAUDE.md` no longer claim server-assigned ids or a
    zero-persistence bug. Comments and test names only; no behaviour changed.
+   **Amended 2026-08-28 (M5G-B1):** the stale zero-persistence comment is gone
+   from `src/anylist/mapping.ts` as well, and the adapter now converts minutes
+   to seconds — a real behaviour change, unlike the 2026-08-21 pass.
    `getRecipeById` is also now documented accurately: the protocol exposes a
    single read endpoint (`data/user-data/get`), so the library fetches the whole
    user-data blob and filters client-side — it is targeted in API shape only.

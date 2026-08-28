@@ -132,7 +132,9 @@ describe("exact-time mapping", () => {
       { minMinutes: 40, maxMinutes: null },
       { minMinutes: 40, maxMinutes: 40 },
     ] as const) {
-      expect(toAnyListRecipe(withCookTime(cookTime)).cookTime).toBe(40);
+      // 40 minutes as AnyList's seconds. The unit conversion is the adapter's
+      // (M5G-B1); what this case is about is that both exact-time shapes agree.
+      expect(toAnyListRecipe(withCookTime(cookTime)).cookTime).toBe(2400);
     }
   });
 
