@@ -1,0 +1,2040 @@
+{
+  "specification": "social-recipe-anylist deterministic unit conversion",
+  "version": "unit-conversion-v1",
+  "milestone": "M5G-B4-C",
+  "description": "Golden vectors for the Original / US / Metric projection engine. The Swift implementation in B4-D must copy this file verbatim, pin its SHA-256, and produce identical results for every vector.",
+  "assumptions": [
+    "A bare 'oz' is mass. Fluid ounces must say so ('fl oz', 'fluid ounce').",
+    "'cup' is the US customary cup, 236.5882365 ml — not the metric 250 ml, the US labelling 240 ml, or the imperial 284 ml.",
+    "'tsp' and 'tbsp' are US customary. The 20 ml Australian tablespoon is not supported.",
+    "'pint', 'quart' and 'gallon' are US liquid measures, not imperial.",
+    "Unit matching is exact against the alias table below. There is no fuzzy matching, and an unmatched unit is never converted.",
+    "Mass and volume are never converted into one another. No density table exists in this engine.",
+    "A calculated conversion is never written back into alternateMeasurements.",
+    "Output fractions are ASCII ('1/2'), never Unicode ('½')."
+  ],
+  "constants": {
+    "gramsPerOunce": 28.349523125,
+    "gramsPerPound": 453.59237,
+    "gramsPerKilogram": 1000,
+    "millilitresPerLitre": 1000,
+    "millilitresPerFluidOunce": 29.5735295625,
+    "millilitresPerTeaspoon": 4.92892159375,
+    "millilitresPerTablespoon": 14.78676478125,
+    "millilitresPerCup": 236.5882365,
+    "millilitresPerPint": 473.176473,
+    "millilitresPerQuart": 946.352946,
+    "millilitresPerGallon": 3785.411784
+  },
+  "rounding": {
+    "snapTolerance": 0.05,
+    "ladder": [
+      "0",
+      "1/8",
+      "1/4",
+      "1/3",
+      "1/2",
+      "2/3",
+      "3/4",
+      "1"
+    ],
+    "usVolumeLadder": [
+      {
+        "unit": "cup",
+        "floor": 0.25
+      },
+      {
+        "unit": "tbsp",
+        "floor": 1
+      },
+      {
+        "unit": "tsp",
+        "floor": 1
+      }
+    ],
+    "perUnit": {
+      "g": "one decimal below 10 g, whole grams at or above",
+      "ml": "nearest half millilitre below 10 ml, whole millilitres at or above",
+      "oz": "one decimal",
+      "kg": "at most two decimals",
+      "lb": "at most two decimals",
+      "l": "at most two decimals"
+    },
+    "unitSelection": {
+      "metricMass": "kg at or above 1000 g, else g",
+      "usMass": "lb at or above 16 oz, else oz",
+      "metricVolume": "l at or above 1000 ml, else ml",
+      "usVolume": "largest ladder unit clearing its floor whose value snaps within tolerance; else largest unit holding one whole unit, snapped to the nearest eighth",
+      "range": "both ends share the unit chosen by the LOWER end"
+    }
+  },
+  "unitClassification": [
+    {
+      "input": "#",
+      "unit": "lb",
+      "kind": "mass",
+      "system": "us"
+    },
+    {
+      "input": "bunch",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "bunches",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "can",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "cans",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "cc",
+      "unit": "ml",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "clove",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "cloves",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "cup",
+      "unit": "cup",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "cups",
+      "unit": "cup",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "dash",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "dashes",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "drizzle",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "fl oz",
+      "unit": "fl_oz",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "fluid ounce",
+      "unit": "fl_oz",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "fluid ounces",
+      "unit": "fl_oz",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "g",
+      "unit": "g",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "gal",
+      "unit": "gallon",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "gallon",
+      "unit": "gallon",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "gallons",
+      "unit": "gallon",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "glug",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "gr",
+      "unit": "g",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "gram",
+      "unit": "g",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "gramme",
+      "unit": "g",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "grammes",
+      "unit": "g",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "grams",
+      "unit": "g",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "handful",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "handfuls",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "head",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "heads",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "kg",
+      "unit": "kg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "kilo",
+      "unit": "kg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "kilogram",
+      "unit": "kg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "kilogramme",
+      "unit": "kg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "kilogrammes",
+      "unit": "kg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "kilograms",
+      "unit": "kg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "kilos",
+      "unit": "kg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "l",
+      "unit": "l",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "lb",
+      "unit": "lb",
+      "kind": "mass",
+      "system": "us"
+    },
+    {
+      "input": "lbs",
+      "unit": "lb",
+      "kind": "mass",
+      "system": "us"
+    },
+    {
+      "input": "liter",
+      "unit": "l",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "liters",
+      "unit": "l",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "litre",
+      "unit": "l",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "litres",
+      "unit": "l",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "mg",
+      "unit": "mg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "milligram",
+      "unit": "mg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "milligramme",
+      "unit": "mg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "milligrammes",
+      "unit": "mg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "milligrams",
+      "unit": "mg",
+      "kind": "mass",
+      "system": "metric"
+    },
+    {
+      "input": "milliliter",
+      "unit": "ml",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "milliliters",
+      "unit": "ml",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "millilitre",
+      "unit": "ml",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "millilitres",
+      "unit": "ml",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "ml",
+      "unit": "ml",
+      "kind": "volume",
+      "system": "metric"
+    },
+    {
+      "input": "ounce",
+      "unit": "oz",
+      "kind": "mass",
+      "system": "us"
+    },
+    {
+      "input": "ounces",
+      "unit": "oz",
+      "kind": "mass",
+      "system": "us"
+    },
+    {
+      "input": "oz",
+      "unit": "oz",
+      "kind": "mass",
+      "system": "us"
+    },
+    {
+      "input": "package",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "packages",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "packet",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "packets",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "piece",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "pieces",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "pinch",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "pinches",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "pint",
+      "unit": "pint",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "pints",
+      "unit": "pint",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "pound",
+      "unit": "lb",
+      "kind": "mass",
+      "system": "us"
+    },
+    {
+      "input": "pounds",
+      "unit": "lb",
+      "kind": "mass",
+      "system": "us"
+    },
+    {
+      "input": "pt",
+      "unit": "pint",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "qt",
+      "unit": "quart",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "quart",
+      "unit": "quart",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "quarts",
+      "unit": "quart",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "slice",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "slices",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "splash",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "splashes",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "sprig",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "sprigs",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "stick",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "sticks",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "tablespoon",
+      "unit": "tbsp",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "tablespoons",
+      "unit": "tbsp",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "tbs",
+      "unit": "tbsp",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "tbsp",
+      "unit": "tbsp",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "teaspoon",
+      "unit": "tsp",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "teaspoons",
+      "unit": "tsp",
+      "kind": "volume",
+      "system": "us"
+    },
+    {
+      "input": "tin",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "tins",
+      "unit": null,
+      "kind": "count",
+      "system": "neutral"
+    },
+    {
+      "input": "to taste",
+      "unit": null,
+      "kind": "descriptive",
+      "system": "neutral"
+    },
+    {
+      "input": "tsp",
+      "unit": "tsp",
+      "kind": "volume",
+      "system": "us"
+    }
+  ],
+  "quantityGrammar": [
+    {
+      "input": "400",
+      "expected": {
+        "kind": "exact",
+        "value": 400
+      }
+    },
+    {
+      "input": "2",
+      "expected": {
+        "kind": "exact",
+        "value": 2
+      }
+    },
+    {
+      "input": "3.5",
+      "expected": {
+        "kind": "exact",
+        "value": 3.5
+      }
+    },
+    {
+      "input": "1.25",
+      "expected": {
+        "kind": "exact",
+        "value": 1.25
+      }
+    },
+    {
+      "input": "1/2",
+      "expected": {
+        "kind": "exact",
+        "value": 0.5
+      }
+    },
+    {
+      "input": "3/4",
+      "expected": {
+        "kind": "exact",
+        "value": 0.75
+      }
+    },
+    {
+      "input": "1/3",
+      "expected": {
+        "kind": "exact",
+        "value": 0.3333333333333333
+      }
+    },
+    {
+      "input": "1 1/2",
+      "expected": {
+        "kind": "exact",
+        "value": 1.5
+      }
+    },
+    {
+      "input": "2 3/4",
+      "expected": {
+        "kind": "exact",
+        "value": 2.75
+      }
+    },
+    {
+      "input": "½",
+      "expected": {
+        "kind": "exact",
+        "value": 0.5
+      }
+    },
+    {
+      "input": "¾",
+      "expected": {
+        "kind": "exact",
+        "value": 0.75
+      }
+    },
+    {
+      "input": "⅓",
+      "expected": {
+        "kind": "exact",
+        "value": 0.3333333333333333
+      }
+    },
+    {
+      "input": "⅔",
+      "expected": {
+        "kind": "exact",
+        "value": 0.6666666666666666
+      }
+    },
+    {
+      "input": "¼",
+      "expected": {
+        "kind": "exact",
+        "value": 0.25
+      }
+    },
+    {
+      "input": "⅛",
+      "expected": {
+        "kind": "exact",
+        "value": 0.125
+      }
+    },
+    {
+      "input": "1½",
+      "expected": {
+        "kind": "exact",
+        "value": 1.5
+      }
+    },
+    {
+      "input": "2¾",
+      "expected": {
+        "kind": "exact",
+        "value": 2.75
+      }
+    },
+    {
+      "input": "2-3",
+      "expected": {
+        "kind": "range",
+        "min": 2,
+        "max": 3
+      }
+    },
+    {
+      "input": "2–3",
+      "expected": {
+        "kind": "range",
+        "min": 2,
+        "max": 3
+      }
+    },
+    {
+      "input": "2 to 3",
+      "expected": {
+        "kind": "range",
+        "min": 2,
+        "max": 3
+      }
+    },
+    {
+      "input": "1 1/2-2",
+      "expected": {
+        "kind": "range",
+        "min": 1.5,
+        "max": 2
+      }
+    },
+    {
+      "input": "2 to 2.5",
+      "expected": {
+        "kind": "range",
+        "min": 2,
+        "max": 2.5
+      }
+    },
+    {
+      "input": "to taste",
+      "expected": null
+    },
+    {
+      "input": "a handful",
+      "expected": null
+    },
+    {
+      "input": "about two",
+      "expected": null
+    },
+    {
+      "input": "",
+      "expected": null
+    },
+    {
+      "input": "   ",
+      "expected": null
+    },
+    {
+      "input": "1/0",
+      "expected": null
+    },
+    {
+      "input": "1/",
+      "expected": null
+    },
+    {
+      "input": "/2",
+      "expected": null
+    },
+    {
+      "input": "-3",
+      "expected": null
+    },
+    {
+      "input": "0",
+      "expected": null
+    },
+    {
+      "input": "0.0",
+      "expected": null
+    },
+    {
+      "input": "abc",
+      "expected": null
+    },
+    {
+      "input": "1 1/2 1/2",
+      "expected": null
+    },
+    {
+      "input": "3-2",
+      "expected": null
+    },
+    {
+      "input": "2-2",
+      "expected": null
+    },
+    {
+      "input": "two",
+      "expected": null
+    },
+    {
+      "input": "1,5",
+      "expected": null
+    },
+    {
+      "input": "1 ½ cups",
+      "expected": null
+    }
+  ],
+  "vectors": [
+    {
+      "id": "alt-sweet-potato-us",
+      "group": "author-alternate-precedence",
+      "description": "Metric primary with a US mass alternate: the creator's own ounces win over any calculation.",
+      "input": {
+        "quantity": "400",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "14",
+            "unit": "oz",
+            "descriptor": null
+          },
+          {
+            "quantity": "2 to 2.5",
+            "unit": null,
+            "descriptor": "medium sweet potatoes"
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "authorAlternate",
+        "reason": "author_alternate_selected",
+        "quantity": "14",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "alt-mushrooms-us",
+      "group": "author-alternate-precedence",
+      "description": "A volume alternate sits beside a mass alternate; only the same-family one may be selected.",
+      "input": {
+        "quantity": "100",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "3.5",
+            "unit": "oz",
+            "descriptor": null
+          },
+          {
+            "quantity": "1",
+            "unit": "cup",
+            "descriptor": "sliced"
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "authorAlternate",
+        "reason": "author_alternate_selected",
+        "quantity": "3.5",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "alt-parmesan-us",
+      "group": "author-alternate-precedence",
+      "description": "As above, with a preparation-like descriptor on the volume alternate.",
+      "input": {
+        "quantity": "30",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "1",
+            "unit": "oz",
+            "descriptor": null
+          },
+          {
+            "quantity": "1/3",
+            "unit": "cup",
+            "descriptor": "grated"
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "authorAlternate",
+        "reason": "author_alternate_selected",
+        "quantity": "1",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "alt-source-order",
+      "group": "author-alternate-precedence",
+      "description": "Two qualifying alternates: source order decides, never magnitude.",
+      "input": {
+        "quantity": "500",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "17.6",
+            "unit": "oz",
+            "descriptor": null
+          },
+          {
+            "quantity": "1.1",
+            "unit": "lb",
+            "descriptor": null
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "authorAlternate",
+        "reason": "author_alternate_selected",
+        "quantity": "17.6",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "alt-verbatim-range",
+      "group": "author-alternate-precedence",
+      "description": "An alternate whose quantity cannot be parsed arithmetically is still usable verbatim.",
+      "input": {
+        "quantity": "1",
+        "unit": "kg",
+        "alternateMeasurements": [
+          {
+            "quantity": "2 to 2.2",
+            "unit": "lb",
+            "descriptor": null
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "authorAlternate",
+        "reason": "author_alternate_selected",
+        "quantity": "2 to 2.2",
+        "unit": "lb",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "lb",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "alt-unitless-never-selected",
+      "group": "author-alternate-precedence",
+      "description": "A descriptive, unit-less alternate must never become a measurement; the engine calculates instead.",
+      "input": {
+        "quantity": "400",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "2 to 2.5",
+            "unit": null,
+            "descriptor": "medium sweet potatoes"
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "14.1",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "alt-wrong-system-ignored",
+      "group": "author-alternate-precedence",
+      "description": "A metric alternate is no help to a US projection.",
+      "input": {
+        "quantity": "400",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "0.4",
+            "unit": "kg",
+            "descriptor": null
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "14.1",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "cross-family-cup-not-selected",
+      "group": "forbidden-cross-family",
+      "description": "100 g with only a cup alternate: the cup is NOT selected; a same-family calculation runs instead.",
+      "input": {
+        "quantity": "100",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "1",
+            "unit": "cup",
+            "descriptor": "sliced"
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "3.5",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "cross-family-mass-alt-for-volume",
+      "group": "forbidden-cross-family",
+      "description": "A mass alternate beside a volume primary is the same violation in reverse.",
+      "input": {
+        "quantity": "240",
+        "unit": "ml",
+        "alternateMeasurements": [
+          {
+            "quantity": "8",
+            "unit": "oz",
+            "descriptor": null
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "1",
+        "unit": "cup",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "cup",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "mass-400g-us",
+      "group": "calculated-mass",
+      "description": "400 g to US.",
+      "input": {
+        "quantity": "400",
+        "unit": "g",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "14.1",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-250g-us",
+      "group": "calculated-mass",
+      "description": "250 g to US.",
+      "input": {
+        "quantity": "250",
+        "unit": "g",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "8.8",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-1.5lb-metric",
+      "group": "calculated-mass",
+      "description": "1 1/2 lb to metric.",
+      "input": {
+        "quantity": "1 1/2",
+        "unit": "lb",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "680",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-8oz-metric",
+      "group": "calculated-mass",
+      "description": "8 oz to metric.",
+      "input": {
+        "quantity": "8",
+        "unit": "oz",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "227",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-1kg-us",
+      "group": "calculated-mass",
+      "description": "1 kg to US crosses the 16 oz boundary into pounds.",
+      "input": {
+        "quantity": "1",
+        "unit": "kg",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "2.2",
+        "unit": "lb",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "lb",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-boundary-453g-us",
+      "group": "calculated-mass",
+      "description": "Exactly 1 lb of grams lands on the oz/lb boundary.",
+      "input": {
+        "quantity": "453.59237",
+        "unit": "g",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "1",
+        "unit": "lb",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "lb",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-boundary-450g-us",
+      "group": "calculated-mass",
+      "description": "Just below the boundary stays in ounces.",
+      "input": {
+        "quantity": "450",
+        "unit": "g",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "15.9",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-boundary-999g-metric",
+      "group": "calculated-mass",
+      "description": "Just below 1000 g stays in grams.",
+      "input": {
+        "quantity": "2.2",
+        "unit": "lb",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "998",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-small-metric",
+      "group": "calculated-mass",
+      "description": "Under 10 g keeps one decimal.",
+      "input": {
+        "quantity": "0.25",
+        "unit": "oz",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "7.1",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-too-small-us",
+      "group": "calculated-mass",
+      "description": "0.5 g has no representable US mass form and fails closed rather than reporting 0 oz.",
+      "input": {
+        "quantity": "0.5",
+        "unit": "g",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "no_representable_result",
+        "quantity": "0.5",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-240ml-us",
+      "group": "calculated-volume",
+      "description": "240 ml to US.",
+      "input": {
+        "quantity": "240",
+        "unit": "ml",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "1",
+        "unit": "cup",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "cup",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-500ml-us",
+      "group": "calculated-volume",
+      "description": "500 ml to US.",
+      "input": {
+        "quantity": "500",
+        "unit": "ml",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "2 1/8",
+        "unit": "cup",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "cup",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-120ml-us",
+      "group": "calculated-volume",
+      "description": "120 ml snaps to a familiar half cup.",
+      "input": {
+        "quantity": "120",
+        "unit": "ml",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "1/2",
+        "unit": "cup",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "cup",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-60ml-us",
+      "group": "calculated-volume",
+      "description": "60 ml snaps to a quarter cup.",
+      "input": {
+        "quantity": "60",
+        "unit": "ml",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "1/4",
+        "unit": "cup",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "cup",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-100ml-us",
+      "group": "calculated-volume",
+      "description": "100 ml is 0.42 cups, which snaps to no ladder fraction, so it steps down to tablespoons.",
+      "input": {
+        "quantity": "100",
+        "unit": "ml",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "6 3/4",
+        "unit": "tbsp",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "tbsp",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-30ml-us",
+      "group": "calculated-volume",
+      "description": "30 ml is below the quarter-cup floor and reads as tablespoons.",
+      "input": {
+        "quantity": "30",
+        "unit": "ml",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "2",
+        "unit": "tbsp",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "tbsp",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-5ml-us",
+      "group": "calculated-volume",
+      "description": "5 ml reads as a teaspoon, not a third of a tablespoon.",
+      "input": {
+        "quantity": "5",
+        "unit": "ml",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "1",
+        "unit": "tsp",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "tsp",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-1cup-metric",
+      "group": "calculated-volume",
+      "description": "1 cup to metric.",
+      "input": {
+        "quantity": "1",
+        "unit": "cup",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "237",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-1tbsp-metric",
+      "group": "calculated-volume",
+      "description": "1 tbsp to metric.",
+      "input": {
+        "quantity": "1",
+        "unit": "tbsp",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "15",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-1tsp-metric",
+      "group": "calculated-volume",
+      "description": "1 tsp to metric: the half-millilitre grid gives the familiar 5 ml.",
+      "input": {
+        "quantity": "1",
+        "unit": "tsp",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "5",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-halftsp-metric",
+      "group": "calculated-volume",
+      "description": "Half a teaspoon keeps half-millilitre resolution.",
+      "input": {
+        "quantity": "1/2",
+        "unit": "tsp",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "2.5",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-1gallon-metric",
+      "group": "calculated-volume",
+      "description": "A gallon crosses into litres.",
+      "input": {
+        "quantity": "1",
+        "unit": "gallon",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "3.79",
+        "unit": "l",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "l",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-2l-us",
+      "group": "calculated-volume",
+      "description": "2 litres to US cups.",
+      "input": {
+        "quantity": "2",
+        "unit": "l",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "8 1/2",
+        "unit": "cup",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "cup",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-flozin-metric",
+      "group": "calculated-volume",
+      "description": "fl oz is a supported input unit even though the engine never emits it.",
+      "input": {
+        "quantity": "8",
+        "unit": "fl oz",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "237",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-pint-metric",
+      "group": "calculated-volume",
+      "description": "US liquid pint to metric.",
+      "input": {
+        "quantity": "1",
+        "unit": "pint",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "473",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-quart-metric",
+      "group": "calculated-volume",
+      "description": "US liquid quart to metric.",
+      "input": {
+        "quantity": "1",
+        "unit": "quart",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "946",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "range-2-3lb-metric",
+      "group": "ranges",
+      "description": "A stated range converts both ends into the unit the lower end chose.",
+      "input": {
+        "quantity": "2-3",
+        "unit": "lb",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "907-1361",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "range-mixed-metric",
+      "group": "ranges",
+      "description": "A mixed-number range.",
+      "input": {
+        "quantity": "1 1/2-2",
+        "unit": "lb",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "680-907",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "range-400-500g-us",
+      "group": "ranges",
+      "description": "The lower end picks the unit, so the range never renders a sub-1 quantity.",
+      "input": {
+        "quantity": "400-500",
+        "unit": "g",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "14.1-17.6",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "range-to-form-us",
+      "group": "ranges",
+      "description": "A 'to' range behaves identically to a dashed one.",
+      "input": {
+        "quantity": "2 to 2.5",
+        "unit": "kg",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "4.41-5.51",
+        "unit": "lb",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "lb",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "unchanged-count-us",
+      "group": "unchanged",
+      "description": "A count is never converted.",
+      "input": {
+        "quantity": "2",
+        "unit": "cloves",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "kind_not_convertible",
+        "quantity": "2",
+        "unit": "cloves",
+        "descriptor": null,
+        "kind": "count",
+        "system": "neutral",
+        "canonicalUnit": null,
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "unchanged-count-metric",
+      "group": "unchanged",
+      "description": "The same count in metric.",
+      "input": {
+        "quantity": "2",
+        "unit": "cloves",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "kind_not_convertible",
+        "quantity": "2",
+        "unit": "cloves",
+        "descriptor": null,
+        "kind": "count",
+        "system": "neutral",
+        "canonicalUnit": null,
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "unchanged-bare-count-us",
+      "group": "unchanged",
+      "description": "A bare number with no unit is a count.",
+      "input": {
+        "quantity": "4",
+        "unit": null,
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "kind_not_convertible",
+        "quantity": "4",
+        "unit": null,
+        "descriptor": null,
+        "kind": "count",
+        "system": "neutral",
+        "canonicalUnit": null,
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "unchanged-to-taste-us",
+      "group": "unchanged",
+      "description": "A descriptive amount the creator left to the cook.",
+      "input": {
+        "quantity": null,
+        "unit": "to taste",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "kind_not_convertible",
+        "quantity": null,
+        "unit": "to taste",
+        "descriptor": null,
+        "kind": "descriptive",
+        "system": "neutral",
+        "canonicalUnit": null,
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "unchanged-unknown-unit-us",
+      "group": "unchanged",
+      "description": "An unrecognised unit fails closed. The engine never guesses from similarity.",
+      "input": {
+        "quantity": "2",
+        "unit": "smidgens",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "unit_not_recognised",
+        "quantity": "2",
+        "unit": "smidgens",
+        "descriptor": null,
+        "kind": "unknown",
+        "system": "unknown",
+        "canonicalUnit": null,
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "unchanged-already-us",
+      "group": "unchanged",
+      "description": "An already-US ingredient in US mode is not rewritten into another US unit.",
+      "input": {
+        "quantity": "14",
+        "unit": "oz",
+        "alternateMeasurements": null
+      },
+      "target": "us",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "already_in_target_system",
+        "quantity": "14",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "unchanged-already-metric",
+      "group": "unchanged",
+      "description": "An already-metric ingredient in Metric mode.",
+      "input": {
+        "quantity": "400",
+        "unit": "g",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "already_in_target_system",
+        "quantity": "400",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "unchanged-already-us-with-alternate",
+      "group": "unchanged",
+      "description": "Already-in-target beats the alternate search: a US alternate does not displace a US primary.",
+      "input": {
+        "quantity": "14",
+        "unit": "oz",
+        "alternateMeasurements": [
+          {
+            "quantity": "1",
+            "unit": "lb",
+            "descriptor": null
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "already_in_target_system",
+        "quantity": "14",
+        "unit": "oz",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "us",
+        "canonicalUnit": "oz",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "unchanged-unparseable-quantity",
+      "group": "unchanged",
+      "description": "A recognised unit with prose for a quantity produces no calculation.",
+      "input": {
+        "quantity": "about two",
+        "unit": "cups",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "quantity_not_parseable",
+        "quantity": "about two",
+        "unit": "cups",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "us",
+        "canonicalUnit": "cup",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "original-mass",
+      "group": "original",
+      "description": "Original mode returns the canonical primary untouched, alternates retained separately.",
+      "input": {
+        "quantity": "400",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "14",
+            "unit": "oz",
+            "descriptor": null
+          }
+        ]
+      },
+      "target": "original",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "original_requested",
+        "quantity": "400",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 1
+      }
+    },
+    {
+      "id": "original-descriptive",
+      "group": "original",
+      "description": "Original mode over a descriptive amount.",
+      "input": {
+        "quantity": null,
+        "unit": "to taste",
+        "alternateMeasurements": null
+      },
+      "target": "original",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "original_requested",
+        "quantity": null,
+        "unit": "to taste",
+        "descriptor": null,
+        "kind": "descriptive",
+        "system": "neutral",
+        "canonicalUnit": null,
+        "secondaryAlternateCount": 0
+      }
+    }
+  ]
+}
