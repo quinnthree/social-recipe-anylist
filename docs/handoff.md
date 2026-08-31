@@ -429,6 +429,82 @@ Keychain and bounded 401 recovery. The public route is built last, on purpose.
 
 **This does not unblock broad consumer release.** ADR-023 is a separate gate.
 
+## M5G-B4-B — author-provided alternate measurements, merged and deployed (2026-08-31)
+
+Merge commit `29e4549` (`--no-ff` of `feature/m5g-b4-b-author-alternates`
+@ `2c385e9`, tree `02630f3d`, byte-identical to the approved feature tree).
+Production deployment `dpl_DKcdZrSdrVWQ2yR3weeev1NV5RgJ`, target **production**,
+READY, aliased to `social-recipe-anylist.vercel.app`. 1632 tests passing,
+64 skipped, typecheck clean.
+
+Live structured-output verification passed on the production Instagram source
+before merge. No live extraction and no AnyList operation were performed during
+merge, push, or deploy.
+
+### The eleven guarantees this milestone establishes
+
+1. **The canonical Ingredient carries alternates.**
+
+   ```ts
+   alternateMeasurements: Array<{
+     quantity: string
+     unit: string | null
+     descriptor: string | null
+   }> | null
+   ```
+
+2. **Author-provided values only.** A calculated conversion never belongs in
+   this field — not a unit conversion, not a rounding, not a density lookup,
+   not a scaling. Every alternate in the corpus is quotable from its own
+   `rawText`, which is what makes the rule checkable rather than merely stated.
+
+3. **`rawText` remains source ground truth.** It is unchanged, never
+   regenerated from the structured fields, and still the only place some
+   information survives at all — `to taste`, a literal `(optional)`, a stated
+   range.
+
+4. **An alternate descriptor is not promoted to `preparation`.** The `sliced`
+   in `1 cup sliced` says what a cup of mushrooms means; it is not a step the
+   cook was asked to perform. `3 cloves garlic, minced` is unaffected and still
+   sets `preparation`.
+
+5. **Old clients may omit the field.** Absence is accepted and normalises to
+   `null`. That is the *only* leniency in the otherwise-strict inbound schema:
+   an explicit `null` is accepted, an array is validated strictly entry by
+   entry, and anything else fails.
+
+6. **`schemaVersion` remains 1.** Version 2 announces a change an old client
+   would get *wrong*; a field it neither sends nor reads is not one.
+
+7. **Fingerprint behaviour is deployment-safe.** For an otherwise equivalent
+   pre-B4-B recipe, absent ≡ `null` ≡ `[]` — all three normalise to an omitted
+   key before hashing, so the serialisation is byte-identical to how the recipe
+   hashed before this milestone.
+
+8. **Existing `idem:v1` records remain reachable.** No namespace change, no
+   `v2` route, no key change. Proven against hashes captured by running
+   `main@046c407`'s own schema out of git, not values the new build produced —
+   a test derived from current code could not detect the failure it exists to
+   catch. Pre-deploy `COMPLETED`, `IN_PROGRESS`, and `AMBIGUOUS` records were
+   each asserted to still answer correctly after the change.
+
+9. **Real alternates may legitimately change a fingerprint.** A recipe that
+   gained author alternates is a different recipe and must not silently replay.
+
+10. **AnyList adapter output is unchanged.** Alternates are not sent to AnyList
+    and are asserted not to appear anywhere in the payload. They are preserved
+    for the later Review projection.
+
+11. **Rollout order is backend first → iOS later.** The backend is now
+    deployed; no iOS client sends or reads the field yet, and none needs to
+    change in order to keep working.
+
+### Explicitly not started
+
+Unit conversion, rounding, an Original/US/Metric projection, temperature
+conversion, scaling, and any iOS work. B4-B preserves information; it does not
+present or transform it.
+
 ## Rules for all parallel agents
 
 1. **Contracts are frozen.** ADR-008 applies. No agent changes the canonical

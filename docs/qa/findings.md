@@ -33,6 +33,7 @@ knowing. **Resolved** — fixed in the integrated build or settled by contract.
 | QA-027 | Observation (new) | Unauthenticated callers can distinguish a registered route (401) from an unregistered one (404) |
 | QA-028 | Gap (new) | A leading adjective such as "grated parmesan" is left in `name`; nothing decides whether it is identity or preparation |
 | QA-029 | Defect (new, minor) | The Open Graph truncation warning and its confidence penalty fire even when the fetched caption is complete |
+| QA-030 | Observation (new) | An unquantified amount such as "to taste" has no canonical home, and lands in `unit` or nowhere depending on the run |
 
 ---
 
@@ -336,6 +337,33 @@ happens, as `instagram-incomplete-caption` shows.
 Deliberately not fixed in B4-B: it is unrelated to alternate-measurement
 representation, and changing a confidence calculation inside a milestone about
 schema fidelity would have muddied both.
+
+## QA-030 — "to taste" has no canonical home
+
+**Severity:** Observation, pre-existing. **Recorded in:** `fixtures/corpus.ts`,
+`instagram-sweet-potato-tart`.
+
+The line `Salt, Paprika & Pepper — to taste` has produced two different
+extractions across live runs of the same source:
+
+- `quantity: null, unit: null` — observed 2026-08-31 (B4-A, pre-B4-B prompt)
+- `quantity: null, unit: "to taste"` — observed 2026-08-31 (B4-B verification)
+
+Both are schema-valid, and neither is obviously wrong. The canonical Ingredient
+has no way to express *an amount the creator deliberately left to the cook*, so
+"to taste" has nowhere principled to go: it is not a quantity, and calling it a
+unit is a stretch the model makes on some runs and not others. `rawText`
+preserves it either way, which is why nothing is lost.
+
+**This is not a B4-B defect and was not caused by it.** The variance appeared
+under the old prompt too, B4-B's prompt additions are scoped entirely to
+`alternateMeasurements`, and the primary quantity/unit rules are untouched.
+`alternateMeasurements` was `null` on this line in both runs, which is correct.
+
+Deliberately **not** fixed, and the canonical model is **not** altered for it in
+this milestone. It sits with QA-005 (the Ingredient cannot express "optional")
+as the same shape of gap: the model has no vocabulary for a non-numeric amount.
+Resolving them together, once, is better than bolting a special case onto one.
 
 ---
 
