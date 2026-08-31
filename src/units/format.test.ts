@@ -69,24 +69,66 @@ describe("US mass", () => {
 
 describe("metric volume", () => {
   it.each([
-    [236.5882365, "237 ml"],
+    [236.5882365, "240 ml"],
     [14.78676478125, "15 ml"],
-    [473.176473, "473 ml"],
+    [29.5735295625, "30 ml"],
+    [473.176473, "470 ml"],
+    [946.352946, "950 ml"],
     [1000, "1 l"],
-    [3785.411784, "3.79 l"],
+    [3785.411784, "3.8 l"],
   ])("%d ml → %s", (millilitres, expected) => {
     expect(volume(millilitres, "metric")).toBe(expected);
   });
 
-  it("snaps below 10 ml to the nearest half millilitre", () => {
-    // A US teaspoon is 4.92892 ml. Every metric cook calls that 5 ml, and
-    // "4.9 ml" would be precision nobody asked for.
-    expect(volume(4.92892159375, "metric")).toBe("5 ml");
-    expect(volume(2.464460796875, "metric")).toBe("2.5 ml");
+  it("produces the conventional cup table without a lookup table", () => {
+    // Every one of these is the number printed in real recipes, and not one of
+    // them is enumerated anywhere in the engine. They fall out of a single grid
+    // that widens with magnitude.
+    expect(volume(236.5882365 / 4, "metric")).toBe("60 ml");
+    expect(volume(236.5882365 / 3, "metric")).toBe("80 ml");
+    expect(volume(236.5882365 / 2, "metric")).toBe("120 ml");
+    expect(volume((236.5882365 * 2) / 3, "metric")).toBe("160 ml");
+    expect(volume((236.5882365 * 3) / 4, "metric")).toBe("180 ml");
+    expect(volume(236.5882365, "metric")).toBe("240 ml");
   });
 
-  it("switches to litres exactly at 1000 ml", () => {
-    expect(volume(999, "metric")).toBe("999 ml");
+  it("never emits a value no jug is graduated for", () => {
+    // The defect this rule exists to fix: 236.5882365 ml is arithmetically
+    // right and unusable. Nothing in the ordinary cooking range may come back
+    // off the grid.
+    for (let millilitres = 1; millilitres <= 2000; millilitres += 1.7) {
+      const rendered = volume(millilitres, "metric") ?? "";
+      const value = Number(/^([\d.]+)/.exec(rendered)?.[1] ?? "0");
+      const asMillilitres = rendered.endsWith(" l") ? value * 1000 : value;
+
+      const grid =
+        asMillilitres < 10 ? 0.5 : asMillilitres < 50 ? 1 : asMillilitres < 100 ? 5 : asMillilitres < 1000 ? 10 : 50;
+
+      expect(Math.abs(asMillilitres / grid - Math.round(asMillilitres / grid))).toBeLessThan(1e-9);
+    }
+  });
+
+  it("never moves a value by more than about five percent", () => {
+    // The rule the grid is derived from, asserted rather than described.
+    for (let millilitres = 1; millilitres <= 5000; millilitres += 3.1) {
+      const rendered = volume(millilitres, "metric") ?? "";
+      const value = Number(/^([\d.]+)/.exec(rendered)?.[1] ?? "0");
+      const asMillilitres = rendered.endsWith(" l") ? value * 1000 : value;
+
+      expect(Math.abs(asMillilitres - millilitres) / millilitres).toBeLessThanOrEqual(0.051);
+    }
+  });
+
+  it("keeps half-millilitre resolution for the smallest spoons", () => {
+    expect(volume(4.92892159375, "metric")).toBe("5 ml");
+    expect(volume(2.464460796875, "metric")).toBe("2.5 ml");
+    expect(volume(1.23223039688, "metric")).toBe("1 ml");
+  });
+
+  it("chooses litres from the gridded value, not the raw one", () => {
+    // 995 ml grids to 1000, and "1000 ml" would be a worse way to say "1 l".
+    expect(volume(994, "metric")).toBe("990 ml");
+    expect(volume(995, "metric")).toBe("1 l");
     expect(volume(1000, "metric")).toBe("1 l");
   });
 });
@@ -157,7 +199,7 @@ describe("US volume", () => {
     }
 
     // Still a supported input: 8 fl oz is a cup.
-    expect(volume(8 * 29.5735295625, "metric")).toBe("237 ml");
+    expect(volume(8 * 29.5735295625, "metric")).toBe("240 ml");
   });
 });
 

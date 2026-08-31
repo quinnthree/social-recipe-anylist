@@ -144,7 +144,7 @@ describe("safe calculated conversion", () => {
     ["8 oz → Metric", ingredient("8", "oz"), "metric", "227 g"],
     ["240 ml → US", ingredient("240", "ml"), "us", "1 cup"],
     ["500 ml → US", ingredient("500", "ml"), "us", "2 1/8 cup"],
-    ["1 cup → Metric", ingredient("1", "cup"), "metric", "237 ml"],
+    ["1 cup → Metric", ingredient("1", "cup"), "metric", "240 ml"],
     ["1 tbsp → Metric", ingredient("1", "tbsp"), "metric", "15 ml"],
     ["1 tsp → Metric", ingredient("1", "tsp"), "metric", "5 ml"],
   ] as const)("%s", (_label, input, target, expected) => {

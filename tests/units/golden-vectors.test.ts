@@ -26,7 +26,7 @@ const VECTOR_PATH = "tests/fixtures/unit-conversion-v1.json";
  * the same commit — and B4-D's Swift pin has to change too, which is the point.
  * A silent edit fails here first.
  */
-const VECTOR_SHA256 = "c4da5832298ec447b4cc0fc65b22f61d1931d8016524e3b534022fd559584a13";
+const VECTOR_SHA256 = "bbb4d0b77735cf29971780b2ca1e1ab0d34fdccfa131d49c1d86e0e897c06b3e";
 
 interface ProjectionVector {
   id: string;
@@ -51,6 +51,9 @@ interface Specification {
   version: string;
   assumptions: string[];
   constants: Record<string, number>;
+  rounding: {
+    culinaryMillilitreGrid: { bands: Array<{ below: number | null; grid: number }> };
+  };
   vectors: ProjectionVector[];
   quantityGrammar: Array<{ input: string; expected: unknown }>;
   unitClassification: Array<{
@@ -83,6 +86,20 @@ describe("the shared specification file", () => {
     // vector and still be wrong.
     expect(spec.assumptions.join(" ")).toContain("bare 'oz' is mass");
     expect(spec.assumptions.join(" ")).toContain("236.5882365");
+    // The culinary-rounding assumption is part of the contract too: a Swift
+    // engine emitting a mathematically perfect 237 ml would pass every
+    // arithmetic check and still be wrong for a kitchen.
+    expect(spec.assumptions.join(" ")).toContain("240 ml on every jug");
+  });
+
+  it("states the culinary millilitre grid B4-D has to reimplement", () => {
+    expect(spec.rounding.culinaryMillilitreGrid.bands).toEqual([
+      { below: 10, grid: 0.5 },
+      { below: 50, grid: 1 },
+      { below: 100, grid: 5 },
+      { below: 1000, grid: 10 },
+      { below: null, grid: 50 },
+    ]);
   });
 
   it("carries every vector group", () => {
@@ -106,7 +123,7 @@ describe("the shared specification file", () => {
   });
 
   it("is large enough to be worth pinning", () => {
-    expect(spec.vectors.length).toBeGreaterThanOrEqual(50);
+    expect(spec.vectors.length).toBeGreaterThanOrEqual(58);
     expect(spec.quantityGrammar.length).toBeGreaterThanOrEqual(40);
     expect(spec.unitClassification.length).toBeGreaterThanOrEqual(90);
   });

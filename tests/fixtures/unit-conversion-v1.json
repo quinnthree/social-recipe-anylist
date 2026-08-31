@@ -11,7 +11,8 @@
     "Unit matching is exact against the alias table below. There is no fuzzy matching, and an unmatched unit is never converted.",
     "Mass and volume are never converted into one another. No density table exists in this engine.",
     "A calculated conversion is never written back into alternateMeasurements.",
-    "Output fractions are ASCII ('1/2'), never Unicode ('½')."
+    "Output fractions are ASCII ('1/2'), never Unicode ('½').",
+    "Metric volumes are rounded to a culinary grid at output, because volume is poured against printed graduations: 1 cup is 236.5882365 ml exactly and 240 ml on every jug. Mass keeps finer precision, because a digital scale reads 227 g exactly."
   ],
   "constants": {
     "gramsPerOunce": 28.349523125,
@@ -54,18 +55,44 @@
     ],
     "perUnit": {
       "g": "one decimal below 10 g, whole grams at or above",
-      "ml": "nearest half millilitre below 10 ml, whole millilitres at or above",
+      "ml": "the culinary millilitre grid (see culinaryMillilitreGrid)",
       "oz": "one decimal",
       "kg": "at most two decimals",
       "lb": "at most two decimals",
-      "l": "at most two decimals"
+      "l": "the culinary millilitre grid, displayed at litre scale, at most two decimals"
     },
     "unitSelection": {
       "metricMass": "kg at or above 1000 g, else g",
       "usMass": "lb at or above 16 oz, else oz",
-      "metricVolume": "l at or above 1000 ml, else ml",
+      "metricVolume": "l at or above 1000 ml AFTER gridding, else ml — so 995 ml reads as 1 l",
       "usVolume": "largest ladder unit clearing its floor whose value snaps within tolerance; else largest unit holding one whole unit, snapped to the nearest eighth",
       "range": "both ends share the unit chosen by the LOWER end"
+    },
+    "culinaryMillilitreGrid": {
+      "rule": "Round the millilitre value to a grid that widens with magnitude, so rounding never moves a value by more than about 5%. Applied at output only; the exact constants remain the arithmetic source of truth.",
+      "bands": [
+        {
+          "below": 10,
+          "grid": 0.5
+        },
+        {
+          "below": 50,
+          "grid": 1
+        },
+        {
+          "below": 100,
+          "grid": 5
+        },
+        {
+          "below": 1000,
+          "grid": 10
+        },
+        {
+          "below": null,
+          "grid": 50
+        }
+      ],
+      "note": "The conventional metric equivalents fall out of this grid rather than being enumerated: 1 tsp = 5 ml, 1 tbsp = 15 ml, 1 fl oz = 30 ml, 1/4 cup = 60 ml, 1/3 cup = 80 ml, 1/2 cup = 120 ml, 3/4 cup = 180 ml, 1 cup = 240 ml. There is no unit-specific or ingredient-specific lookup table anywhere in the engine."
     }
   },
   "unitClassification": [
@@ -1509,7 +1536,7 @@
       "expected": {
         "source": "calculated",
         "reason": "calculated_conversion",
-        "quantity": "237",
+        "quantity": "240",
         "unit": "ml",
         "descriptor": null,
         "kind": "volume",
@@ -1597,7 +1624,7 @@
       "expected": {
         "source": "calculated",
         "reason": "calculated_conversion",
-        "quantity": "3.79",
+        "quantity": "3.8",
         "unit": "l",
         "descriptor": null,
         "kind": "volume",
@@ -1641,7 +1668,7 @@
       "expected": {
         "source": "calculated",
         "reason": "calculated_conversion",
-        "quantity": "237",
+        "quantity": "240",
         "unit": "ml",
         "descriptor": null,
         "kind": "volume",
@@ -1663,7 +1690,7 @@
       "expected": {
         "source": "calculated",
         "reason": "calculated_conversion",
-        "quantity": "473",
+        "quantity": "470",
         "unit": "ml",
         "descriptor": null,
         "kind": "volume",
@@ -1685,7 +1712,7 @@
       "expected": {
         "source": "calculated",
         "reason": "calculated_conversion",
-        "quantity": "946",
+        "quantity": "950",
         "unit": "ml",
         "descriptor": null,
         "kind": "volume",
@@ -2034,6 +2061,188 @@
         "system": "neutral",
         "canonicalUnit": null,
         "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-flozin-1-metric",
+      "group": "calculated-volume",
+      "description": "1 US fl oz to metric.",
+      "input": {
+        "quantity": "1",
+        "unit": "fl oz",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "30",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-quarter-cup-metric",
+      "group": "calculated-volume",
+      "description": "A quarter cup lands on the conventional 60 ml.",
+      "input": {
+        "quantity": "1/4",
+        "unit": "cup",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "60",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-third-cup-metric",
+      "group": "calculated-volume",
+      "description": "A third of a cup lands on the conventional 80 ml.",
+      "input": {
+        "quantity": "1/3",
+        "unit": "cup",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "80",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-half-cup-metric",
+      "group": "calculated-volume",
+      "description": "Half a cup lands on the conventional 120 ml.",
+      "input": {
+        "quantity": "1/2",
+        "unit": "cup",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "120",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-three-quarter-cup-metric",
+      "group": "calculated-volume",
+      "description": "Three quarters of a cup lands on the conventional 180 ml.",
+      "input": {
+        "quantity": "3/4",
+        "unit": "cup",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "180",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-litre-boundary-metric",
+      "group": "calculated-volume",
+      "description": "The litre boundary is decided after gridding: 4 cups is 946 ml, which grids to 950 ml and stays millilitres.",
+      "input": {
+        "quantity": "4",
+        "unit": "cup",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "950",
+        "unit": "ml",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "ml",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "vol-two-quart-metric",
+      "group": "calculated-volume",
+      "description": "Two US quarts cross into litres.",
+      "input": {
+        "quantity": "2",
+        "unit": "quart",
+        "alternateMeasurements": null
+      },
+      "target": "metric",
+      "expected": {
+        "source": "calculated",
+        "reason": "calculated_conversion",
+        "quantity": "1.9",
+        "unit": "l",
+        "descriptor": null,
+        "kind": "volume",
+        "system": "metric",
+        "canonicalUnit": "l",
+        "secondaryAlternateCount": 0
+      }
+    },
+    {
+      "id": "mass-tiny-declines-as-mass",
+      "group": "calculated-mass",
+      "description": "A mass too small to express in US units declines as a MASS. No volume unit is ever a candidate: the family is fixed by the input unit before any formatter is reached.",
+      "input": {
+        "quantity": "0.5",
+        "unit": "g",
+        "alternateMeasurements": [
+          {
+            "quantity": "1/8",
+            "unit": "tsp",
+            "descriptor": null
+          }
+        ]
+      },
+      "target": "us",
+      "expected": {
+        "source": "unchangedOriginal",
+        "reason": "no_representable_result",
+        "quantity": "0.5",
+        "unit": "g",
+        "descriptor": null,
+        "kind": "mass",
+        "system": "metric",
+        "canonicalUnit": "g",
+        "secondaryAlternateCount": 1
       }
     }
   ]

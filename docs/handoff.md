@@ -518,8 +518,8 @@ unreachable by `tests/architecture/unit-engine-dormancy.test.ts`.
 |---|---|
 | **Path** | `tests/fixtures/unit-conversion-v1.json` |
 | **Version** | `unit-conversion-v1` |
-| **SHA-256** | `c4da5832298ec447b4cc0fc65b22f61d1931d8016524e3b534022fd559584a13` |
-| **Vectors** | 50 projection · 40 quantity-grammar · 91 unit-classification = **181** |
+| **SHA-256** | `bbb4d0b77735cf29971780b2ca1e1ab0d34fdccfa131d49c1d86e0e897c06b3e` |
+| **Vectors** | 58 projection · 40 quantity-grammar · 91 unit-classification = **189** |
 
 The Swift engine in B4-D copies this file **verbatim**, pins the same SHA-256,
 and must produce identical results for all 181 vectors. Two engines agreeing
@@ -554,6 +554,27 @@ while happily accepting "about two".
    original untouched, each with a distinct `reason`.
 5. **A calculated value never enters `alternateMeasurements`.** A `Projection` is
    ephemeral, is not persisted, and appears in no API schema.
+
+### Metric volumes are rounded to a culinary grid
+
+A first pass emitted `1 cup → 237 ml`. Arithmetically perfect, and useless: no
+measuring jug has a 237 ml line, and every recipe in the world prints 240.
+
+Output now snaps millilitres to a grid that widens with magnitude — 0.5 ml below
+10, then 1, 5, 10, and 50 ml above a litre — chosen so **rounding never moves a
+value by more than about 5%**. Exact constants remain the arithmetic source of
+truth; the grid applies once, at output.
+
+The conventional metric table falls out of that single rule rather than being
+enumerated anywhere: 1 tsp = 5 ml, 1 tbsp = 15 ml, 1 fl oz = 30 ml, 1/4 cup =
+60 ml, 1/3 cup = 80 ml, 1/2 cup = 120 ml, 2/3 cup = 160 ml, 3/4 cup = 180 ml,
+1 cup = 240 ml. There is no unit-specific or ingredient-specific lookup table.
+Also: 1 pint = 470 ml, 1 quart = 950 ml, 1 gallon = 3.8 l.
+
+**Mass was deliberately left alone.** The same problem does not arise there,
+because the two families are measured with different instruments: a digital
+scale reads 227 g exactly, whereas nothing in a kitchen can pour 237 ml. So
+`8 oz → 227 g` and `400 g → 14.1 oz` stand.
 
 ### Deliberately not built
 

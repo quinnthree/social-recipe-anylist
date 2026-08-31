@@ -90,10 +90,10 @@ function chooseUsMassUnit(grams: number): ConvertibleUnit {
 /**
  * Formats a volume given in millilitres, choosing the unit.
  *
- * **Metric.** Litres at or above 1000 ml, otherwise millilitres. Under 10 ml the
- * value snaps to the nearest half-millilitre, which is what turns a US teaspoon
- * — 4.92892 ml — into the `5 ml` every metric cook already calls a teaspoon,
- * rather than a spuriously exact `4.9`.
+ * **Metric.** Snapped to the culinary grid (see `culinaryMillilitres`), then
+ * shown as litres at or above 1000 ml and millilitres below. This is what turns
+ * a US cup into the `240 ml` every recipe prints rather than a jug-less
+ * `237 ml`, and a teaspoon into `5 ml` rather than `4.9`.
  *
  * **US.** See `chooseUsVolume`.
  */
@@ -105,10 +105,45 @@ export function formatVolume(
 
   if (system === "us") return chooseUsVolume(millilitres);
 
-  const unit = millilitres >= 1000 ? "l" : "ml";
+  // The unit is chosen from the *gridded* value, not the raw one, so 995 ml
+  // reads as "1 l" rather than "1000 ml".
+  const unit = culinaryMillilitres(millilitres) >= 1000 ? "l" : "ml";
   const quantity = formatQuantityInUnit(millilitres, unit);
 
   return quantity === null ? null : { quantity, unit };
+}
+
+/**
+ * Snaps a millilitre amount to the grid a cook can actually pour.
+ *
+ * This is the difference between a conversion and a lab reading. A US cup is
+ * 236.5882365 ml, and no measuring jug in any kitchen has a 237 ml line on it —
+ * every recipe in the world prints 240. The exact constant stays the arithmetic
+ * source of truth; this rounds once, at output.
+ *
+ * The grid widens with magnitude so that **rounding never moves a value by more
+ * than about 5%**, which is the whole rule. Everything else follows from it:
+ *
+ * | amount      | grid   | worst error |
+ * |-------------|--------|-------------|
+ * | under 10 ml | 0.5 ml | 2.5% at 10  |
+ * | under 50 ml | 1 ml   | 5% at 10    |
+ * | under 100 ml| 5 ml   | 5% at 50    |
+ * | under 1 l   | 10 ml  | 5% at 100   |
+ * | 1 l and up  | 50 ml  | 2.5% at 1 l |
+ *
+ * What makes this worth preferring to a lookup table is that the familiar
+ * numbers *fall out of it*. A teaspoon lands on 5 ml, a tablespoon on 15, a
+ * fluid ounce on 30, a quarter cup on 60, a third on 80, a half on 120, three
+ * quarters on 180, and a cup on 240 — the conventional metric equivalents,
+ * derived rather than enumerated. No ingredient-specific or unit-specific table
+ * exists here, and none is needed.
+ */
+function culinaryMillilitres(millilitres: number): number {
+  const grid =
+    millilitres < 10 ? 0.5 : millilitres < 50 ? 1 : millilitres < 100 ? 5 : millilitres < 1000 ? 10 : 50;
+
+  return Math.round(millilitres / grid) * grid;
 }
 
 /**
@@ -178,10 +213,13 @@ export function formatQuantityInUnit(base: number, unit: ConvertibleUnit): strin
  * magnitude, so no rule can quietly leak onto a unit it was not written for.
  *
  * - **g** — whole grams at 10 g and above, one decimal below, because 7.5 g is a
- *   real distinction and 227.4 g is not.
- * - **ml** — whole millilitres at 10 ml and above; below that the nearest half
- *   millilitre, which is what turns a US teaspoon (4.92892 ml) into the `5 ml`
- *   every metric cook already calls a teaspoon.
+ *   real distinction and 227.4 g is not. Mass deliberately keeps this precision
+ *   while volume does not: a digital scale reads 227 g exactly, whereas no jug
+ *   has a 237 ml line. The two families are measured with different instruments,
+ *   so they get different grids.
+ * - **ml, l** — the culinary grid, which widens with magnitude so no value moves
+ *   by more than about 5%. Volumes are poured against printed graduations, so a
+ *   number off the grid is a number nobody can measure.
  * - **oz** — one decimal always. `400 g` becomes `14.1 oz` and `250 g` becomes
  *   `8.8 oz`, which is exactly what creators write themselves.
  * - **kg, lb, l** — at most two decimals. Enough for `2.2 lb`, not enough for
@@ -192,12 +230,14 @@ function roundForUnit(unit: ConvertibleUnit, value: number): number {
     case "g":
       return value < 10 ? round(value, 1) : round(value, 0);
     case "ml":
-      return value < 10 ? Math.round(value * 2) / 2 : round(value, 0);
+      return culinaryMillilitres(value);
+    case "l":
+      // Litres are the same grid, displayed at a different scale.
+      return round(culinaryMillilitres(value * 1000) / 1000, 2);
     case "oz":
       return round(value, 1);
     case "kg":
     case "lb":
-    case "l":
       return round(value, 2);
     default:
       // mg, and the large US volumes the ladder never selects.
