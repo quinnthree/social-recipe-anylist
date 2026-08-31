@@ -505,6 +505,84 @@ Unit conversion, rounding, an Original/US/Metric projection, temperature
 conversion, scaling, and any iOS work. B4-B preserves information; it does not
 present or transform it.
 
+## M5G-B4-C — deterministic unit conversion reference engine (2026-08-31)
+
+Branch `feature/m5g-b4-c-unit-conversion-engine`. **Dormant reference
+infrastructure: no user-facing behaviour ships in this milestone.** The engine
+lives at `src/units/`, is imported by nothing in production, and is proven
+unreachable by `tests/architecture/unit-engine-dormancy.test.ts`.
+
+### Shared specification — B4-D must pin this
+
+| | |
+|---|---|
+| **Path** | `tests/fixtures/unit-conversion-v1.json` |
+| **Version** | `unit-conversion-v1` |
+| **SHA-256** | `bbb4d0b77735cf29971780b2ca1e1ab0d34fdccfa131d49c1d86e0e897c06b3e` |
+| **Vectors** | 58 projection · 40 quantity-grammar · 91 unit-classification = **189** |
+
+The Swift engine in B4-D copies this file **verbatim**, pins the same SHA-256,
+and must produce identical results for all 181 vectors. Two engines agreeing
+with one shared file cannot drift; two engines agreeing with their own tests can
+drift for years unnoticed. The TypeScript side pins it in
+`tests/units/golden-vectors.test.ts`, so an edit on either side fails loudly.
+
+The file carries more than expectations: the V1 disambiguation assumptions, the
+exact conversion constants, the rounding ladder and per-unit rules, the full
+alias table, and the grammar's **rejections** as well as its acceptances. A
+grammar spec listing only what parses would let a permissive implementation pass
+while happily accepting "about two".
+
+**Do not modify the iOS repository in B4-C.** Nothing here touches it.
+
+### What the engine guarantees
+
+1. **The safe family rule is absolute.** Mass and volume are never converted
+   into one another, nor counts or descriptive amounts into anything. This is
+   structural rather than a policy: there is no density anywhere in the engine,
+   so a mass↔volume conversion is unrepresentable, not merely disallowed.
+2. **Author alternates are used verbatim.** A creator-provided alternate may
+   replace the primary only when its unit is recognised, it belongs to the
+   requested system, and its family matches the primary's. Its quantity string
+   is never recalculated, rounded, or renormalised — which is also why it works
+   for values like `2 to 2.5` that no parser could use.
+3. **Already-in-target beats everything.** `14 oz` asked for in US is already
+   the answer; the engine does not rewrite it into another US unit merely
+   because it could.
+4. **Nothing is invented.** An unrecognised unit, an unparseable quantity, a
+   count, or an amount too small to express all fail closed and return the
+   original untouched, each with a distinct `reason`.
+5. **A calculated value never enters `alternateMeasurements`.** A `Projection` is
+   ephemeral, is not persisted, and appears in no API schema.
+
+### Metric volumes are rounded to a culinary grid
+
+A first pass emitted `1 cup → 237 ml`. Arithmetically perfect, and useless: no
+measuring jug has a 237 ml line, and every recipe in the world prints 240.
+
+Output now snaps millilitres to a grid that widens with magnitude — 0.5 ml below
+10, then 1, 5, 10, and 50 ml above a litre — chosen so **rounding never moves a
+value by more than about 5%**. Exact constants remain the arithmetic source of
+truth; the grid applies once, at output.
+
+The conventional metric table falls out of that single rule rather than being
+enumerated anywhere: 1 tsp = 5 ml, 1 tbsp = 15 ml, 1 fl oz = 30 ml, 1/4 cup =
+60 ml, 1/3 cup = 80 ml, 1/2 cup = 120 ml, 2/3 cup = 160 ml, 3/4 cup = 180 ml,
+1 cup = 240 ml. There is no unit-specific or ingredient-specific lookup table.
+Also: 1 pint = 470 ml, 1 quart = 950 ml, 1 gallon = 3.8 l.
+
+**Mass was deliberately left alone.** The same problem does not arise there,
+because the two families are measured with different instruments: a digital
+scale reads 227 g exactly, whereas nothing in a kitchen can pour 237 ml. So
+`8 oz → 227 g` and `400 g → 14.1 oz` stand.
+
+### Deliberately not built
+
+Temperature conversion, scaling, ingredient-density tables, mass↔volume
+conversion, any Original/US/Metric API surface, and all iOS code. The canonical
+Recipe schema, the extraction prompt, the export contract, the AnyList mapping,
+and idempotency are all untouched by this milestone.
+
 ## Rules for all parallel agents
 
 1. **Contracts are frozen.** ADR-008 applies. No agent changes the canonical
