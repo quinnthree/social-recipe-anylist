@@ -19,6 +19,7 @@ function recipe(overrides: Partial<Recipe> = {}): Recipe {
         name: "cottage cheese",
         preparation: "blended",
         rawText: "16 oz cottage cheese, blended",
+        alternateMeasurements: null,
       },
     ],
     instructions: ["Blend until smooth.", "Bake until set."],
@@ -240,6 +241,7 @@ describe("toAnyListRecipe", () => {
           name: `ingredient ${index}`,
           preparation: null,
           rawText: `ingredient ${index}`,
+          alternateMeasurements: null,
         })),
       });
 
@@ -249,7 +251,7 @@ describe("toAnyListRecipe", () => {
     it("keeps an ingredient that has nothing but a name", () => {
       const bare = recipe({
         ingredients: [
-          { quantity: null, unit: null, name: "salt", preparation: null, rawText: "salt" },
+          { quantity: null, unit: null, name: "salt", preparation: null, rawText: "salt", alternateMeasurements: null },
         ],
       });
 
@@ -265,6 +267,7 @@ describe("toAnyListIngredient", () => {
     name: "flour",
     preparation: "sifted",
     rawText: "1 cup flour, sifted",
+    alternateMeasurements: null,
     ...overrides,
   });
 
@@ -309,5 +312,85 @@ describe("toAnyListIngredient", () => {
       ingredient({ quantity: null, unit: null, preparation: null }),
     );
     expect(mapped).toEqual({ name: "flour" });
+  });
+});
+
+/**
+ * B4-B added `alternateMeasurements` to the canonical Ingredient and changed
+ * nothing about what AnyList receives.
+ *
+ * That is the milestone's actual decision, so it is asserted rather than
+ * assumed. AnyList has one quantity string per ingredient; appending the
+ * creator's equivalents to it would rewrite the user's ingredient line as a
+ * side effect of a schema change nobody asked to see. The alternates are being
+ * preserved for a later Review projection, and until that exists they stay out
+ * of the export.
+ */
+describe("author-provided alternates never reach AnyList", () => {
+  const sweetPotato: Ingredient = {
+    quantity: "400",
+    unit: "g",
+    name: "Sweet potatoes",
+    preparation: null,
+    rawText: "Sweet potatoes — 400g (approx. 14 oz / 2 to 2.5 medium sweet potatoes)",
+    alternateMeasurements: [
+      { quantity: "14", unit: "oz", descriptor: null },
+      { quantity: "2 to 2.5", unit: null, descriptor: "medium sweet potatoes" },
+    ],
+  };
+
+  const withoutAlternates: Ingredient = { ...sweetPotato, alternateMeasurements: null };
+
+  it("maps identically with and without alternates", () => {
+    expect(toAnyListIngredient(sweetPotato)).toEqual(toAnyListIngredient(withoutAlternates));
+  });
+
+  it("sends the primary measurement alone", () => {
+    expect(toAnyListIngredient(sweetPotato)).toEqual({ name: "Sweet potatoes", quantity: "400 g" });
+  });
+
+  it("leaks no alternate text into the payload", () => {
+    const payload = JSON.stringify(toAnyListRecipe(recipe({ ingredients: [sweetPotato] })));
+
+    for (const leaked of ["alternateMeasurements", "14", "oz", "2 to 2.5", "medium sweet potatoes", "approx"]) {
+      expect(payload).not.toContain(leaked);
+    }
+  });
+
+  it("does not promote an alternate descriptor into the AnyList note", () => {
+    // "sliced" qualifies the creator's cup measurement. Writing it into the
+    // note would tell the cook to slice something the creator never asked them
+    // to slice.
+    const mushrooms: Ingredient = {
+      quantity: "100",
+      unit: "g",
+      name: "Mushrooms",
+      preparation: null,
+      rawText: "Mushrooms — 100g (approx. 3.5 oz / 1 cup sliced)",
+      alternateMeasurements: [
+        { quantity: "3.5", unit: "oz", descriptor: null },
+        { quantity: "1", unit: "cup", descriptor: "sliced" },
+      ],
+    };
+
+    expect(toAnyListIngredient(mushrooms)).toEqual({ name: "Mushrooms", quantity: "100 g" });
+  });
+
+  it("still sends a real preparation alongside alternates", () => {
+    // Suppressing the descriptor must not suppress `preparation` too.
+    const garlic: Ingredient = {
+      quantity: "2",
+      unit: "cloves",
+      name: "garlic",
+      preparation: "minced",
+      rawText: "2 cloves garlic, minced (about 1 tsp)",
+      alternateMeasurements: [{ quantity: "1", unit: "tsp", descriptor: null }],
+    };
+
+    expect(toAnyListIngredient(garlic)).toEqual({
+      name: "garlic",
+      quantity: "2 cloves",
+      note: "minced",
+    });
   });
 });

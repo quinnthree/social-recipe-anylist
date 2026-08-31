@@ -35,6 +35,22 @@ const InboundTimeRange = z
     message: "maxMinutes must not be below minMinutes",
   });
 
+/**
+ * Trimmed, unlike the older inbound string fields above.
+ *
+ * QA-023 records that only `title` is hardened against whitespace-only values;
+ * the rest of this reference schema still mirrors that weakness. A field being
+ * defined for the first time does not have to inherit it, and this one does
+ * not — a blank `unit` carries no more information than a blank title.
+ */
+const InboundAlternateMeasurement = z
+  .object({
+    quantity: z.string().trim().min(1),
+    unit: z.string().trim().min(1).nullable(),
+    descriptor: z.string().trim().min(1).nullable(),
+  })
+  .strict();
+
 const InboundIngredient = z
   .object({
     quantity: z.string().min(1).nullable(),
@@ -42,6 +58,9 @@ const InboundIngredient = z
     name: z.string().min(1),
     preparation: z.string().min(1).nullable(),
     rawText: z.string().min(1),
+    // Additive and optional, so a client built before B4-B — which sends no
+    // such key at all — is still accepted. Absence normalises to null.
+    alternateMeasurements: z.array(InboundAlternateMeasurement).nullable().default(null),
   })
   .strict();
 

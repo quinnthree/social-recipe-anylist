@@ -259,7 +259,7 @@ describe("the minimum usable recipe gate (ADR-019, QA-003)", () => {
       deps: deps({
         parseRecipe: async () => ({
           ...recipe,
-          ingredients: [{ quantity: "1", unit: "cup", name: "   ", preparation: null, rawText: "1 cup" }],
+          ingredients: [{ quantity: "1", unit: "cup", name: "   ", preparation: null, rawText: "1 cup", alternateMeasurements: null }],
         }),
         createSaver: () => {
           throw new Error("the gate should have rejected this before any save");
@@ -310,7 +310,7 @@ describe("the minimum usable recipe gate (ADR-019, QA-003)", () => {
       deps: deps({
         parseRecipe: async () => ({
           ...recipe,
-          ingredients: [{ quantity: null, unit: null, name: "   ", preparation: null, rawText: "x" }],
+          ingredients: [{ quantity: null, unit: null, name: "   ", preparation: null, rawText: "x", alternateMeasurements: null }],
         }),
         createSaver: () => {
           throw new Error("the gate should have rejected this before any save");

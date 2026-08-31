@@ -7,6 +7,7 @@ import { storeKey, type ClaimResult, type StoredResult } from "../../idempotency
 import type { RouteContext } from "../context.js";
 import { failWith, type FailureKind } from "../errors.js";
 import { fingerprintOf } from "../fingerprint.js";
+import { forFingerprint } from "../recipe-fingerprint.js";
 import { RecipeInputSchema } from "../recipe-input.js";
 import { checkSchemaVersion, readIdempotencyKey, SUPPORTED_SCHEMA_VERSION } from "../requests.js";
 import {
@@ -77,9 +78,13 @@ export function registerExportRoute(server: FastifyInstance, context: RouteConte
       // Fingerprint the *accepted, normalised* request, never the raw bytes
       // (ADR-018): re-serialising an identical recipe with different key order
       // must not read as a different request.
+      //
+      // `forFingerprint` additionally drops empty author-alternate metadata, so
+      // a recipe with no alternates hashes exactly as it did before B4-B and
+      // pre-deploy idempotency records stay addressable across the rollout.
       const fingerprint = fingerprintOf({
         schemaVersion: SUPPORTED_SCHEMA_VERSION,
-        recipe,
+        recipe: forFingerprint(recipe),
       });
 
       const key = storeKey(ROUTE, idempotencyKey);

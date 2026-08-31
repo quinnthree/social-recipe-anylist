@@ -31,6 +31,8 @@ knowing. **Resolved** — fixed in the integrated build or settled by contract.
 | QA-025 | **Defect (new, minor)** | `isUsableRecipe` trims the title but counts blank ingredients and instructions |
 | QA-026 | Observation (new) | `requestId` is in the envelope only on production routes, not "wherever an envelope is returned" |
 | QA-027 | Observation (new) | Unauthenticated callers can distinguish a registered route (401) from an unregistered one (404) |
+| QA-028 | Gap (new) | A leading adjective such as "grated parmesan" is left in `name`; nothing decides whether it is identity or preparation |
+| QA-029 | Defect (new, minor) | The Open Graph truncation warning and its confidence penalty fire even when the fetched caption is complete |
 
 ---
 
@@ -283,6 +285,57 @@ improvement — `PUBLIC_PATHS` makes authentication deny-by-default rather than
 dependent on where a route happens to be mounted.
 
 Recorded so the trade is visible, not as a finding to fix.
+
+## QA-028 — A leading adjective is neither split nor deliberately kept
+
+**Severity:** Gap, extraction fidelity. **Recorded in:**
+`tests/contract/author-alternates.test.ts`, "does not resolve the
+leading-adjective case either way (QA-028)".
+
+`3/4 cup grated parmesan` produces `name: "grated parmesan"` with
+`preparation: null`. `2 cloves garlic, minced` produces `name: "garlic"` with
+`preparation: "minced"`. The difference is punctuation, not meaning, and nothing
+in the prompt or the schema states a rule for the first form.
+
+It is genuinely ambiguous. "Grated parmesan" may be the ingredient the shopper
+buys, in which case `name` is right and splitting it would send someone home
+with a wedge; or it may be a whole-ingredient-plus-preparation, in which case
+AnyList should carry the note. Which one is correct depends on the ingredient,
+and sometimes on the creator.
+
+Raised by B4-B, which deliberately did **not** resolve it. B4-B's boundary is
+narrower and better defined — a descriptor inside a creator's *alternate
+measurement* qualifies that measurement — and settling this wider case on the
+back of it would have been scope the evidence did not support. The corpus now
+pins the current behaviour, so a later ruling shows up as a diff rather than a
+silent drift.
+
+Needs a contract decision before a code change.
+
+## QA-029 — The Open Graph truncation warning fires on complete captions
+
+**Severity:** Defect, minor. **Recorded in:** `fixtures/corpus.ts`,
+`instagram-sweet-potato-tart`.
+
+`assessExtraction` attaches "Recipe was extracted from Open Graph metadata,
+which is often a truncated version of the caption" and subtracts 0.1 from
+confidence whenever `textSource === "og-description"`. The condition is the
+*source type*, never a measurement of the text.
+
+Measured against a live Instagram reel on 2026-08-31 (the B4-A evidence gate):
+the fetched `og:description` was 1,550 characters, ran from the intro through
+ingredients, steps, macros, a verdict and the hashtags, and was truncated
+nowhere. The warning fired anyway and the recipe scored 0.9 instead of 1.0.
+
+The warning is not wrong about the *risk* — Instagram does truncate some
+captions — but it is stated as a fact about this recipe, and a user reading it
+on a complete extraction is being told something untrue. Truncation is also
+detectable: Instagram's own elision marker is present in the text when it
+happens, as `instagram-incomplete-caption` shows.
+
+Deliberately not fixed in B4-B: it is unrelated to alternate-measurement
+representation, and changing a confidence calculation inside a milestone about
+schema fidelity would have muddied both.
 
 ---
 

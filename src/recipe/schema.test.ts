@@ -17,8 +17,8 @@ const completeExtraction: ExtractedRecipe = {
   prepTime: { minMinutes: 15, maxMinutes: null },
   cookTime: { minMinutes: 30, maxMinutes: null },
   ingredients: [
-    { quantity: "2", unit: "lb", name: "chicken thighs", preparation: null, rawText: "2 lb chicken thighs" },
-    { quantity: "1", unit: null, name: "white onion", preparation: "sliced", rawText: "1 white onion, sliced" },
+    { quantity: "2", unit: "lb", name: "chicken thighs", preparation: null, rawText: "2 lb chicken thighs", alternateMeasurements: null },
+    { quantity: "1", unit: null, name: "white onion", preparation: "sliced", rawText: "1 white onion, sliced", alternateMeasurements: null },
   ],
   instructions: ["Simmer the chicken until tender.", "Shred and toss in the sauce."],
 };
@@ -311,6 +311,7 @@ describe("assessExtraction", () => {
           name: "cottage cheese",
           preparation: null,
           rawText: "16 oz cottage cheese",
+          alternateMeasurements: null,
         },
       ],
       instructions: ["Blend until smooth.", "Bake at 350\u00b0F (175\u00b0C) for 35\u201340 minutes."],

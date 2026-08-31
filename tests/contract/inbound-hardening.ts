@@ -34,6 +34,7 @@ export const VALID_INBOUND_RECIPE: Recipe = {
       name: "cottage cheese",
       preparation: null,
       rawText: "16 oz cottage cheese",
+      alternateMeasurements: null,
     },
   ],
   instructions: ["Blend until smooth."],
@@ -173,6 +174,94 @@ export function runInboundRecipeConformance(accepts: AcceptsExportBody): void {
       expect(accepts(withRecipe({ cookTime: { minMinutes: 35, maxMinutes: 40, unit: "min" } }))).toBe(
         false,
       );
+    });
+  });
+
+  /**
+   * The one field where absence is deliberately not an error (B4-B).
+   *
+   * The backend ships before any iOS client knows `alternateMeasurements`
+   * exists — server-first, by necessity. Every request arriving in that window
+   * comes from a client whose ingredients simply have no such key, and section
+   * D's strictness would reject all of them. So absence is accepted and
+   * normalised to `null`; everything else about the field stays strict.
+   */
+  describe("E. alternateMeasurements is additive and optional inbound", () => {
+    const ingredient = VALID_INBOUND_RECIPE.ingredients[0];
+    const withIngredient = (overrides: Record<string, unknown>) =>
+      withRecipe({ ingredients: [{ ...ingredient, ...overrides }] });
+
+    const oldClientIngredient = (): Record<string, unknown> => {
+      const copy: Record<string, unknown> = { ...ingredient };
+      delete copy["alternateMeasurements"];
+      return copy;
+    };
+
+    it("accepts an old client's ingredient, which omits the key entirely", () => {
+      expect(accepts(withRecipe({ ingredients: [oldClientIngredient()] }))).toBe(true);
+    });
+
+    it("accepts an explicit null", () => {
+      expect(accepts(withIngredient({ alternateMeasurements: null }))).toBe(true);
+    });
+
+    it("accepts an empty array", () => {
+      expect(accepts(withIngredient({ alternateMeasurements: [] }))).toBe(true);
+    });
+
+    it("accepts author-provided alternates", () => {
+      expect(
+        accepts(
+          withIngredient({
+            alternateMeasurements: [
+              { quantity: "14", unit: "oz", descriptor: null },
+              { quantity: "2 to 2.5", unit: null, descriptor: "medium sweet potatoes" },
+            ],
+          }),
+        ),
+      ).toBe(true);
+    });
+
+    it("rejects a non-array, non-null value", () => {
+      for (const value of ["14 oz", 14, {}, true]) {
+        expect(accepts(withIngredient({ alternateMeasurements: value }))).toBe(false);
+      }
+    });
+
+    it("rejects an alternate with no quantity", () => {
+      for (const entry of [{ unit: "oz", descriptor: null }, { quantity: "", unit: "oz", descriptor: null }]) {
+        expect(accepts(withIngredient({ alternateMeasurements: [entry] }))).toBe(false);
+      }
+    });
+
+    it("rejects an alternate omitting unit or descriptor", () => {
+      expect(accepts(withIngredient({ alternateMeasurements: [{ quantity: "14", unit: "oz" }] }))).toBe(
+        false,
+      );
+      expect(
+        accepts(withIngredient({ alternateMeasurements: [{ quantity: "14", descriptor: null }] })),
+      ).toBe(false);
+    });
+
+    it("rejects an unknown key on an alternate", () => {
+      expect(
+        accepts(
+          withIngredient({
+            alternateMeasurements: [
+              { quantity: "14", unit: "oz", descriptor: null, calculated: false },
+            ],
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    it("rejects a blank unit or descriptor rather than coercing it to null", () => {
+      expect(
+        accepts(withIngredient({ alternateMeasurements: [{ quantity: "14", unit: "  ", descriptor: null }] })),
+      ).toBe(false);
+      expect(
+        accepts(withIngredient({ alternateMeasurements: [{ quantity: "14", unit: "oz", descriptor: " " }] })),
+      ).toBe(false);
     });
   });
 

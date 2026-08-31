@@ -107,7 +107,7 @@ describe("extraction-quality benchmark", () => {
    * The recorded baseline. Changing these numbers is a deliberate act: it means
    * either the corpus grew or extraction quality moved. Both deserve a diff.
    */
-  const BASELINE = { ZERO_EDIT_EXPECTED: 7, EDIT_EXPECTED: 2, FAIL_EXPECTED: 4 } as const;
+  const BASELINE = { ZERO_EDIT_EXPECTED: 9, EDIT_EXPECTED: 2, FAIL_EXPECTED: 4 } as const;
 
   it("matches the recorded classification baseline", () => {
     expect(countByQuality()).toEqual(BASELINE);
@@ -116,18 +116,20 @@ describe("extraction-quality benchmark", () => {
   it("holds the zero-edit rate over deliverable fixtures at the recorded baseline", () => {
     // "Deliverable" means the pipeline is expected to hand the user a recipe at
     // all, so the FAIL_EXPECTED fixtures are excluded rather than counted as
-    // quality failures. 7 of 9.
+    // quality failures. 9 of 11.
     const deliverable = GOLDEN_CORPUS.filter((entry) => entry.quality !== "FAIL_EXPECTED");
     const zeroEdit = deliverable.filter((entry) => entry.quality === "ZERO_EDIT_EXPECTED");
 
-    expect(deliverable).toHaveLength(9);
-    expect(zeroEdit).toHaveLength(7);
-    expect(Math.round((zeroEdit.length / deliverable.length) * 100)).toBe(78);
+    expect(deliverable).toHaveLength(11);
+    expect(zeroEdit).toHaveLength(9);
+    expect(Math.round((zeroEdit.length / deliverable.length) * 100)).toBe(82);
   });
 
   it("keeps a warning from being read as an edit requirement", () => {
-    // Three zero-edit fixtures carry warnings. A warning describes what the
-    // source lacked, not what extraction got wrong (ADR-010).
+    // Four zero-edit fixtures carry warnings. A warning describes what the
+    // source lacked, not what extraction got wrong (ADR-010) — and in
+    // instagram-sweet-potato-tart's case, one of them describes a risk the
+    // source did not actually run (QA-029), which is still not an edit.
     const zeroEditWithWarnings = GOLDEN_CORPUS.filter(
       (entry) =>
         entry.quality === "ZERO_EDIT_EXPECTED" && (entry.expectedAssessment?.warnings.length ?? 0) > 0,
@@ -136,6 +138,8 @@ describe("extraction-quality benchmark", () => {
     expect(zeroEditWithWarnings.map((entry) => entry.id)).toEqual([
       "tiktok-missing-servings",
       "tiktok-missing-quantity",
+      "instagram-sweet-potato-tart",
+      "tiktok-us-primary-no-alternates",
     ]);
   });
 
