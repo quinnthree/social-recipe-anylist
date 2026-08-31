@@ -233,8 +233,46 @@ describe("registration limits", () => {
     expect((await register(app)).statusCode).toBe(200);
   });
 
+  /**
+   * A fixed start, because this test simulates four hours and the daily bucket
+   * is aligned to UTC midnight.
+   *
+   * `Date.now()` here was a real defect. Rate-limit windows are fixed-width
+   * epoch buckets — `Math.floor(now / windowMs)` in `src/ratelimit/store.ts` —
+   * so the daily bucket turns over at 00:00 UTC. Seeding from the wall clock
+   * meant that any run starting between 20:00 and 24:00 UTC pushed the
+   * simulated `+4h` across midnight, the daily allowance reset mid-test, and
+   * the final registration returned 200 instead of 429. The limiter was right
+   * every time; the test simply asked a different question depending on when it
+   * ran, and failed for four hours out of every twenty-four.
+   *
+   * 09:00 UTC leaves nine hours of headroom behind and eleven ahead, so the
+   * whole simulated span stays inside one UTC day whatever the machine's
+   * timezone or the time of day.
+   *
+   * The hourly-rollover test above is deliberately left alone: a day boundary
+   * crossing there would only reset a bucket it already expects to be reset, so
+   * its outcome never depended on the wall clock.
+   */
+  const FIXED_START_UTC = Date.UTC(2026, 0, 15, 9, 0, 0);
+
+  /** The span the test simulates: four hourly rollovers, then one more request. */
+  const SIMULATED_SPAN_MS = 4 * 60 * 60 * 1000;
+
+  it("keeps its fixed start clear of the UTC daily boundary", () => {
+    // Guards the constant rather than the limiter. If someone moves the start
+    // time to within four hours of midnight, this fails immediately instead of
+    // the suite going red once a day for reasons nobody can reproduce locally.
+    const start = new Date(FIXED_START_UTC);
+    const end = new Date(FIXED_START_UTC + SIMULATED_SPAN_MS);
+
+    expect(start.getUTCDate()).toBe(end.getUTCDate());
+    expect(start.getUTCHours()).toBeGreaterThanOrEqual(4);
+    expect(start.getUTCHours() + SIMULATED_SPAN_MS / 3_600_000).toBeLessThan(24);
+  });
+
   it("still holds the daily allowance across rolled-over hours", async () => {
-    let clock = Date.now();
+    let clock = FIXED_START_UTC;
     const { app } = harness({ now: () => clock });
     let issued = 0;
 
@@ -248,6 +286,31 @@ describe("registration limits", () => {
 
     expect(issued).toBe(DEFAULT_LIMITS.registrationPerIpDay);
     expect((await register(app)).statusCode).toBe(429);
+  });
+
+  it("lets the daily allowance reset when the simulated hours cross UTC midnight", async () => {
+    // The demonstration. This is the exact scenario the wall-clock seed used to
+    // wander into: starting at 22:00 UTC, the four simulated hours straddle
+    // midnight, so the last two hours are charged to the next day's bucket and
+    // the twenty-first registration is allowed.
+    //
+    // Nothing is wrong with that — it is the daily limiter working as designed.
+    // What was wrong was a test whose expectation silently depended on which
+    // side of the boundary the machine happened to be on.
+    let clock = Date.UTC(2026, 0, 15, 22, 0, 0);
+    const { app } = harness({ now: () => clock });
+    let issued = 0;
+
+    for (let hour = 0; hour < 4; hour += 1) {
+      for (let i = 0; i < DEFAULT_LIMITS.registrationPerIpHour; i += 1) {
+        if ((await register(app)).statusCode === 200) issued += 1;
+      }
+      clock += 60 * 60 * 1000;
+    }
+
+    expect(issued).toBe(DEFAULT_LIMITS.registrationPerIpDay);
+    // 200 rather than the 429 above, and for a reason a reader can name.
+    expect((await register(app)).statusCode).toBe(200);
   });
 
   it("gives different addresses independent buckets", async () => {
