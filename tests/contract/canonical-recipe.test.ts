@@ -33,7 +33,14 @@ const VALID = {
   prepTime: null,
   cookTime: { minMinutes: 35, maxMinutes: 40 },
   ingredients: [
-    { quantity: "16", unit: "oz", name: "cottage cheese", preparation: null, rawText: "16 oz cottage cheese" },
+    {
+      quantity: "16",
+      unit: "oz",
+      name: "cottage cheese",
+      preparation: null,
+      rawText: "16 oz cottage cheese",
+      alternateMeasurements: null,
+    },
   ],
   instructions: ["Blend until smooth."],
   source: {
@@ -119,9 +126,10 @@ describe("ingredient structure", () => {
     name: "cottage cheese",
     preparation: null,
     rawText: "16 oz cottage cheese",
+    alternateMeasurements: null,
   };
 
-  it("accepts the full five-field shape", () => {
+  it("accepts the full six-field shape", () => {
     expect(IngredientSchema.safeParse(ingredient).success).toBe(true);
   });
 
@@ -146,13 +154,87 @@ describe("ingredient structure", () => {
     }
   });
 
-  it("requires all five keys, including the nullable ones", () => {
-    for (const field of ["quantity", "unit", "name", "preparation", "rawText"]) {
+  it("requires all six keys, including the nullable ones", () => {
+    for (const field of [
+      "quantity",
+      "unit",
+      "name",
+      "preparation",
+      "rawText",
+      "alternateMeasurements",
+    ]) {
       const copy: Record<string, unknown> = { ...ingredient };
       delete copy[field];
 
       expect(IngredientSchema.safeParse(copy).success).toBe(false);
     }
+  });
+});
+
+describe("author-provided alternate measurements", () => {
+  const ingredient = {
+    quantity: "400",
+    unit: "g",
+    name: "Sweet potatoes",
+    preparation: null,
+    rawText: "Sweet potatoes — 400g (approx. 14 oz / 2 to 2.5 medium sweet potatoes)",
+    alternateMeasurements: null as unknown,
+  };
+
+  const withAlternates = (alternateMeasurements: unknown) =>
+    IngredientSchema.safeParse({ ...ingredient, alternateMeasurements });
+
+  it("accepts null when the creator offered no alternate", () => {
+    expect(withAlternates(null).success).toBe(true);
+  });
+
+  it("accepts a weight alternate and a descriptive count alternate together", () => {
+    const parsed = withAlternates([
+      { quantity: "14", unit: "oz", descriptor: null },
+      { quantity: "2 to 2.5", unit: null, descriptor: "medium sweet potatoes" },
+    ]);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.alternateMeasurements).toEqual([
+      { quantity: "14", unit: "oz", descriptor: null },
+      { quantity: "2 to 2.5", unit: null, descriptor: "medium sweet potatoes" },
+    ]);
+  });
+
+  it("keeps an alternate quantity as source text, never a parsed number", () => {
+    // Same rule as the primary quantity: "2 to 2.5" and "1/3" are what the
+    // creator wrote, and turning either into a number would be a calculation.
+    for (const quantity of ["14", "2 to 2.5", "1/3", "3.5", "1½"]) {
+      const parsed = withAlternates([{ quantity, unit: "oz", descriptor: null }]);
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data.alternateMeasurements?.[0]?.quantity).toBe(quantity);
+    }
+  });
+
+  it("rejects a numeric alternate quantity", () => {
+    expect(withAlternates([{ quantity: 14, unit: "oz", descriptor: null }]).success).toBe(false);
+  });
+
+  it("requires an alternate to state a quantity", () => {
+    // A unit or descriptor with no amount is not a measurement.
+    expect(withAlternates([{ quantity: "", unit: "oz", descriptor: null }]).success).toBe(false);
+    expect(withAlternates([{ unit: "oz", descriptor: null }]).success).toBe(false);
+  });
+
+  it("requires unit and descriptor to be present as explicit nulls", () => {
+    expect(withAlternates([{ quantity: "14", descriptor: null }]).success).toBe(false);
+    expect(withAlternates([{ quantity: "14", unit: "oz" }]).success).toBe(false);
+  });
+
+  it("carries no provenance, calculated, or normalised-unit field", () => {
+    // The type means one thing: the creator wrote this. There is no `kind`, no
+    // `calculated` flag, and no unit enum, because nothing in the system may
+    // produce an alternate that did not come from the source (B4-B).
+    const parsed = withAlternates([{ quantity: "14", unit: "oz", descriptor: null }]);
+    const alternate = parsed.success ? parsed.data.alternateMeasurements?.[0] : undefined;
+
+    expect(Object.keys(alternate ?? {}).sort()).toEqual(["descriptor", "quantity", "unit"]);
   });
 });
 

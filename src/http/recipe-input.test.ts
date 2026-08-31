@@ -51,7 +51,7 @@ describe("RecipeInputSchema", () => {
     it("preserves null as a meaningful 'not stated'", () => {
       const recipe = recipeWith({
         ingredients: [
-          { quantity: null, unit: null, name: "salt", preparation: null, rawText: "salt" },
+          { quantity: null, unit: null, name: "salt", preparation: null, rawText: "salt", alternateMeasurements: null },
         ],
       });
       const result = parse(recipe);

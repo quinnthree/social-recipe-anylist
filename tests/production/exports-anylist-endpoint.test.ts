@@ -3,10 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import { fixture } from "../../fixtures/corpus.js";
 import { requireRecipe } from "../../fixtures/types.js";
+import { OPERATOR_DESTINATION_BINDING } from "../../src/anylist/destination.js";
 import type { SaveResult } from "../../src/anylist/types.js";
 import { ExportError } from "../../src/app/export-service.js";
+import { fingerprintOf } from "../../src/http/fingerprint.js";
+import { forFingerprint } from "../../src/http/recipe-fingerprint.js";
+import { RecipeInputSchema } from "../../src/http/recipe-input.js";
 import { buildServer } from "../../src/http/server.js";
 import { MemoryIdempotencyStore } from "../../src/idempotency/memory-store.js";
+import { storeKey } from "../../src/idempotency/store.js";
 import { RecipeSchema, type Recipe } from "../../src/recipe/schema.js";
 import { gap } from "./contract-gaps.js";
 import { idempotencyKeyFor } from "../../src/test-support/idempotency-keys.js";
@@ -442,6 +447,148 @@ describe("idempotent replay", () => {
 
     expect(other.json().idempotent).toBe(false);
     expect(exportRecipe).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * B4-B added `alternateMeasurements` to the accepted recipe, and the
+ * fingerprint is taken over the accepted recipe. These tests exist because that
+ * combination could have invalidated every record already in the store.
+ *
+ * The fingerprint below is **not computed by this build**. It was captured by
+ * running the schema and hash from `main` at 046c407 — the deployed pre-B4-B
+ * code, checked out of git — against this very corpus recipe. Deriving it from
+ * the current code instead would make these tests agree with whatever the code
+ * now does, which is precisely the failure they are meant to catch.
+ */
+describe("records written before B4-B stay addressable after the deploy", () => {
+  /** Captured from 046c407, for `tiktok-cottage-cheese-brownies`. */
+  const LEGACY_FINGERPRINT = "84030e860b4cc7b9445e02b12e95c716569c5c838a35b2823cdb8ae79360c19b";
+
+  /** An ingredient as an old client sends it: no `alternateMeasurements` key. */
+  const oldClientRecipe = (): Record<string, unknown> => ({
+    ...recipe,
+    ingredients: recipe.ingredients.map(({ alternateMeasurements: _dropped, ...rest }) => rest),
+  });
+
+  const oldBody = () => ({ schemaVersion: 1, recipe: oldClientRecipe() });
+
+  async function seedPreDeployRecord(
+    store: MemoryIdempotencyStore,
+    label: string,
+    settle: "complete" | "leave_in_progress" | "fail_ambiguous",
+  ): Promise<void> {
+    const key = storeKey("exports-anylist", idempotencyKeyFor(label));
+    const claim = await store.claim({
+      key,
+      fingerprint: LEGACY_FINGERPRINT,
+      requestId: "req_before_the_deploy",
+      destinationBinding: OPERATOR_DESTINATION_BINDING,
+      now: Date.now(),
+      leaseMs: 60_000,
+    });
+
+    expect(claim.status).toBe("claimed");
+
+    if (settle === "complete") {
+      await store.complete(
+        key,
+        "req_before_the_deploy",
+        { id: saved.identifier, name: saved.name },
+        Date.now(),
+      );
+    } else if (settle === "fail_ambiguous") {
+      await store.fail(key, "req_before_the_deploy", "AMBIGUOUS", "export_unexpected", Date.now());
+    }
+  }
+
+  it("the new route still computes the pre-deploy fingerprint", () => {
+    // The load-bearing assertion, stated directly rather than inferred from a
+    // replay: both an old client's body and an upgraded client's explicit null
+    // must hash to the value 046c407 stored.
+    const fromOldClient = forFingerprint(RecipeInputSchema.parse(oldClientRecipe()));
+    const fromNewClient = forFingerprint(RecipeInputSchema.parse(recipe));
+
+    expect(fingerprintOf({ schemaVersion: 1, recipe: fromOldClient })).toBe(LEGACY_FINGERPRINT);
+    expect(fingerprintOf({ schemaVersion: 1, recipe: fromNewClient })).toBe(LEGACY_FINGERPRINT);
+  });
+
+  it("an old client's retry replays the pre-deploy record instead of writing again", async () => {
+    const { app, exportRecipe, idempotencyStore } = server();
+    await seedPreDeployRecord(idempotencyStore, "k-legacy", "complete");
+
+    const retry = await post(app, oldBody(), KEY("k-legacy"));
+
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().idempotent).toBe(true);
+    expect(retry.json().saved).toEqual({ id: saved.identifier, name: saved.name });
+    expect(retry.json().originalRequestId).toBe("req_before_the_deploy");
+    // The whole point: no second recipe in the account.
+    expect(exportRecipe).not.toHaveBeenCalled();
+  });
+
+  it("a new client's retry of the same recipe reaches the same record", async () => {
+    // The upgraded client now sends `alternateMeasurements: null` for a recipe
+    // whose creator stated no alternates. Same recipe, same record.
+    const { app, exportRecipe, idempotencyStore } = server();
+    await seedPreDeployRecord(idempotencyStore, "k-legacy", "complete");
+
+    const retry = await post(app, validBody, KEY("k-legacy"));
+
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().idempotent).toBe(true);
+    expect(exportRecipe).not.toHaveBeenCalled();
+  });
+
+  it("a pre-deploy IN_PROGRESS record still blocks a retry", async () => {
+    // A fingerprint shift would have hidden this record, and the retry would
+    // have duplicated a write that may still have been running.
+    const { app, exportRecipe, idempotencyStore } = server();
+    await seedPreDeployRecord(idempotencyStore, "k-legacy", "leave_in_progress");
+
+    const retry = await post(app, oldBody(), KEY("k-legacy"));
+
+    expect(retry.statusCode).toBe(409);
+    expect(retry.json().error).toBe("Export already in progress");
+    expect(exportRecipe).not.toHaveBeenCalled();
+  });
+
+  it("a pre-deploy AMBIGUOUS record still refuses a retry", async () => {
+    const { app, exportRecipe, idempotencyStore } = server();
+    await seedPreDeployRecord(idempotencyStore, "k-legacy", "fail_ambiguous");
+
+    const retry = await post(app, oldBody(), KEY("k-legacy"));
+
+    expect(retry.statusCode).toBe(409);
+    expect(exportRecipe).not.toHaveBeenCalled();
+  });
+
+  it("still conflicts when the retry carries real author alternates", async () => {
+    // Neutrality is only for the absence of alternates. A recipe that gained
+    // them is a different recipe and must not silently replay.
+    const { app, idempotencyStore } = server();
+    await seedPreDeployRecord(idempotencyStore, "k-legacy", "complete");
+
+    const changed = {
+      schemaVersion: 1,
+      recipe: {
+        ...recipe,
+        ingredients: recipe.ingredients.map((ingredient, index) =>
+          index === 0
+            ? { ...ingredient, alternateMeasurements: [{ quantity: "450", unit: "g", descriptor: null }] }
+            : ingredient,
+        ),
+      },
+    };
+
+    const retry = await post(app, changed, KEY("k-legacy"));
+
+    expect(retry.statusCode).toBe(409);
+    expect(retry.json().error).toBe("Idempotency key conflict");
+  });
+
+  it("needs no namespace bump: the key is still the v1 key", () => {
+    expect(storeKey("exports-anylist", idempotencyKeyFor("k-legacy"))).toContain("v1");
   });
 });
 

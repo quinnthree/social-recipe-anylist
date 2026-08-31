@@ -18,7 +18,7 @@ import type { Ingredient, Recipe } from "../../src/recipe/schema.js";
 const base = requireRecipe(fixture("tiktok-cottage-cheese-brownies"));
 
 function ingredient(name: string): Ingredient {
-  return { quantity: "1", unit: "cup", name, preparation: null, rawText: `1 cup ${name}` };
+  return { quantity: "1", unit: "cup", name, preparation: null, rawText: `1 cup ${name}`, alternateMeasurements: null };
 }
 
 function recipe(overrides: Partial<Recipe> = {}): Recipe {
@@ -39,7 +39,7 @@ describe("isUsableRecipe — accepts", () => {
 
   it("a recipe whose ingredient has only a name", () => {
     const bare = recipe({
-      ingredients: [{ quantity: null, unit: null, name: "salt", preparation: null, rawText: "salt" }],
+      ingredients: [{ quantity: null, unit: null, name: "salt", preparation: null, rawText: "salt", alternateMeasurements: null }],
     });
 
     expect(isUsableRecipe(bare)).toBe(true);
@@ -122,7 +122,7 @@ describe("isUsableRecipe — inspects without rewriting", () => {
     // left entirely alone either way.
     const wellQuantifiedButNameless = recipe({
       ingredients: [
-        { quantity: "2", unit: "cups", name: "  ", preparation: "sifted", rawText: "2 cups ???" },
+        { quantity: "2", unit: "cups", name: "  ", preparation: "sifted", rawText: "2 cups ???", alternateMeasurements: null },
       ],
     });
 

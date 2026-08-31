@@ -35,12 +35,46 @@ const requiredText = z.string().trim().min(1);
  */
 const optionalText = requiredText.nullable();
 
+/**
+ * An author-provided alternate measurement, as an inbound value. Strict like
+ * everything else here: an entry that invents a key, or carries a blank
+ * `quantity`, is rejected rather than partially accepted.
+ *
+ * Total size is already bounded by the route's 64 KB body limit, so the array
+ * needs no length cap of its own — one would be an invented contract rule.
+ */
+export const AlternateMeasurementInputSchema = z.strictObject({
+  quantity: requiredText,
+  unit: optionalText,
+  descriptor: optionalText,
+});
+
+/**
+ * `alternateMeasurements` is **additive and optional inbound**, which is what
+ * makes a server-first rollout possible (B4-B).
+ *
+ * The backend ships before any iOS client knows the field exists, so an old
+ * client's ingredient — which simply has no such key — must be accepted, not
+ * rejected by the strict object it would otherwise violate. Absence normalises
+ * to canonical `null`, the same value the field would carry if the client had
+ * sent it explicitly, so the two clients produce byte-identical accepted
+ * recipes.
+ *
+ * Absence is the *only* leniency. An explicit `null` is accepted, an array is
+ * validated strictly entry by entry, and anything else fails.
+ *
+ * This deliberately does **not** bump `schemaVersion`. Version 2 exists to
+ * announce a change an old client would get *wrong*; a field it never sends and
+ * never reads is not one. Requiring version 2 here would force every existing
+ * client to change in order to keep doing exactly what it already does.
+ */
 export const IngredientInputSchema = z.strictObject({
   quantity: optionalText,
   unit: optionalText,
   name: requiredText,
   preparation: optionalText,
   rawText: requiredText,
+  alternateMeasurements: z.array(AlternateMeasurementInputSchema).nullable().default(null),
 });
 
 /**

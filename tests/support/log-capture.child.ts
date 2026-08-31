@@ -24,7 +24,7 @@ const recipe: Recipe = {
   prepTime: null,
   cookTime: { minMinutes: 35, maxMinutes: 40 },
   ingredients: [
-    { quantity: "16", unit: "oz", name: "cottage cheese", preparation: null, rawText: "16 oz cottage cheese" },
+    { quantity: "16", unit: "oz", name: "cottage cheese", preparation: null, rawText: "16 oz cottage cheese", alternateMeasurements: null },
   ],
   instructions: ["Blend until smooth."],
   source: {

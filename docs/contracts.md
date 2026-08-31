@@ -114,6 +114,11 @@ explicit `null`, never omitted.
     name: string                      // non-empty
     preparation: string | null
     rawText: string                   // the original line
+    alternateMeasurements: Array<{    // null when the creator stated none
+      quantity: string                // source text, e.g. "14", "2 to 2.5"
+      unit: string | null             // e.g. "oz", "cup"
+      descriptor: string | null       // e.g. "sliced", "medium sweet potatoes"
+    }> | null
   }>
   instructions: string[]
   source: {
@@ -131,6 +136,35 @@ explicit `null`, never omitted.
 
 `maxMinutes: null` means a single stated time. An exact time is never encoded as
 `min === max`.
+
+### `alternateMeasurements` — author-provided only
+
+A second measurement **the creator themselves wrote**, alongside the primary
+one. `Sweet potatoes — 400g (approx. 14 oz / 2 to 2.5 medium sweet potatoes)`
+has a primary of `400` / `g` and two alternates: `14 oz`, and `2 to 2.5` with
+the descriptor `medium sweet potatoes`.
+
+- **Never a conversion.** No unit conversion, rounding, density table, or
+  scaling may write into this field. If the creator did not state it, it is not
+  there. Every alternate is quotable from the ingredient's own `rawText`, which
+  is what makes the rule checkable rather than aspirational.
+- `quantity` is source text, not a number — `"2 to 2.5"` and `"1/3"` stay as
+  written, like the primary quantity.
+- `descriptor` qualifies **that alternate**, not the ingredient. The `sliced` in
+  `1 cup sliced` says what a cup of mushrooms means; it is not a preparation
+  step, and it is not promoted into `preparation`.
+- `null` means the creator offered no alternate. Our extraction never emits `[]`.
+- `rawText` is unchanged and is never regenerated from these fields. It remains
+  the source ground truth, and for some information — `to taste`, a stated
+  parenthetical `(optional)` — it is still the only place that survives.
+
+There is deliberately no `kind`, no provenance enum, no `calculated` flag, no
+normalised numeric quantity, and no unit enum. The type means exactly one thing,
+so a field distinguishing what produced a value would have only one value.
+
+The AnyList adapter does **not** transmit alternates. It sends what it always
+sent: name, the primary quantity and unit as one string, and `preparation` as
+the note. Alternates are preserved for a later Review projection.
 
 ## Authentication
 
@@ -294,6 +328,21 @@ Every production request and successful response carries `schemaVersion: 1`.
 This exists because the canonical Recipe becomes an *inbound* contract for the
 first time (ADR-007). Version 1 is the shape documented in Part 1.
 
+### Additive optional fields do not bump the version
+
+`ingredients[].alternateMeasurements` is version 1. Absence is accepted and
+normalised to `null`; explicit `null` is accepted; an array is validated
+strictly. Absence is the **only** leniency in the otherwise-strict inbound
+schema.
+
+**Rollout order: backend first, iOS later.** The backend must ship before any
+client sends the field, so every request in that window comes from a client
+whose ingredients have no such key — and strict validation would reject all of
+them. Requiring `schemaVersion 2` here would have been worse than useless: it
+would force every existing client to change in order to keep doing exactly what
+it already does. Version 2 is for a change an old client would get *wrong*, and
+a field it neither sends nor reads is not one.
+
 ## Idempotency-Key — IMPLEMENTED
 
 **Required** on `POST /api/exports/anylist`. **Not required** on
@@ -405,6 +454,30 @@ Equivalent JSON with different key ordering, or differing insignificant
 whitespace, must **not** produce `409 Idempotency key conflict`. Comparing raw
 bytes would make a conflict out of a re-serialisation, which is a false alarm
 the client cannot fix.
+
+### Empty `alternateMeasurements` is fingerprint-neutral
+
+Step 2 normalises the accepted recipe, so a key that carries no information
+would still change the hash simply by existing. Absent, `null`, and `[]` all
+mean "this creator offered no alternate", so all three are normalised to an
+**omitted key** before serialisation — byte-identical to how a pre-B4-B recipe
+hashed.
+
+Without this, adding the field would have re-hashed every alternate-free recipe
+at the moment of deployment: a pre-deploy export that timed out and retried
+afterwards would have been answered `409 Idempotency key conflict` for an
+unchanged recipe, and every stored `IN_PROGRESS` and `AMBIGUOUS` record would
+have become invisible to the retry it exists to stop — turning the safe answer
+into a duplicate write.
+
+A recipe carrying **real** alternates does hash differently. It is a different
+recipe.
+
+This is why no key-namespace bump, no `v2` route, and no `schemaVersion 2` were
+needed: existing `idem:v1` records are genuinely still addressable, not versioned
+around. Pinned against hashes captured from the pre-B4-B build in
+`src/http/recipe-fingerprint.test.ts` and
+`tests/production/exports-anylist-endpoint.test.ts`.
 
 ## Request IDs — IMPLEMENTED
 

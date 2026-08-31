@@ -27,6 +27,7 @@ export const validRecipe: Recipe = {
       name: "cottage cheese",
       preparation: null,
       rawText: "16 oz cottage cheese",
+      alternateMeasurements: null,
     },
   ],
   instructions: ["Blend until smooth."],
